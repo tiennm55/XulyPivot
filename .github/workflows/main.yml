@@ -1,4 +1,4 @@
-name: Extract Pivot Cache to Excel and Parquet
+name: Extract PivotCache via Excel Gateway
 
 on:
   workflow_dispatch:
@@ -14,108 +14,63 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests pandas lxml pyarrow openpyxl
+          pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Pivot Cache Extractor
+      - name: Run Pivot Extract via Gateway
         env:
-          TENANT_ID: ${{ secrets.TENANT_ID }}
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          USER_EMAIL: ${{ secrets.USER_EMAIL }}
-          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
-          OUT_XLSX: "/1.Job/2425/1. Tracking/Pivot_Month"
+          BASE_URL: "https://msgraph-excel-gateway.tuanvietc5.workers.dev"
+          APIKEY: "EG2025_1"
+          UPN: "tiennm@tuanvietc5.id.vn"
+          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
+          OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
         run: |
           python - <<'PYCODE'
-          import io, os, zipfile, urllib.parse, requests, pandas as pd
+          import io, os, zipfile, requests, pandas as pd
           from lxml import etree
 
-          # ===============================
-          # 🔐 CẤU HÌNH XÁC THỰC
-          # ===============================
-          TENANT_ID = os.environ["TENANT_ID"]
-          CLIENT_ID = os.environ["CLIENT_ID"]
-          CLIENT_SECRET = os.environ["CLIENT_SECRET"]
-          USER_EMAIL = os.environ["USER_EMAIL"]
+          BASE_URL = os.environ["BASE_URL"]
+          APIKEY = os.environ["APIKEY"]
+          UPN = os.environ["UPN"]
           SRC_FOLDER = os.environ["SRC_FOLDER"]
-          OUT_XLSX = os.environ["OUT_XLSX"]
+          OUT_FOLDER = os.environ["OUT_FOLDER"]
 
-          token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-          token_data = {
-              "grant_type": "client_credentials",
-              "client_id": CLIENT_ID,
-              "client_secret": CLIENT_SECRET,
-              "scope": "https://graph.microsoft.com/.default"
-          }
-          token = requests.post(token_url, data=token_data).json()["access_token"]
-          headers = {"Authorization": f"Bearer {token}"}
+          headers = {"x-api-key": APIKEY, "x-upn": UPN}
 
-          # ===============================
-          # 📂 LẤY THÔNG TIN ONEDRIVE BUSINESS
-          # ===============================
-          user_drive = requests.get(
-              f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drive", headers=headers
-          ).json()
-          if "id" not in user_drive:
-              print("❌ Không thể lấy Drive ID:", user_drive)
-              exit(1)
-
-          drive_id = user_drive["id"]
-          print("📁 Drive ID:", drive_id)
-
-          # ===============================
-          # 🧩 HÀM MÃ HÓA ĐƯỜNG DẪN
-          # ===============================
-          def encode_path(path: str) -> str:
-              """Mã hóa URL giữ nguyên dấu '/'"""
-              return urllib.parse.quote(path, safe="/")
-
-          src_path_enc = encode_path(SRC_FOLDER)
-          out_path_enc = encode_path(OUT_XLSX)
-
-          # ===============================
-          # 📋 LẤY DANH SÁCH FILE NGUỒN
-          # ===============================
-          list_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{src_path_enc}:/children"
+          # ====== 📂 LẤY DANH SÁCH FILE ======
+          list_url = f"{BASE_URL}/list?path={SRC_FOLDER}"
           res = requests.get(list_url, headers=headers).json()
-          files = res.get("value", [])
 
+          files = [f for f in res.get("files", []) if f["name"].lower().endswith(".xlsx")]
           if not files:
-              print("⚠️ Không tìm thấy file nào trong thư mục:", SRC_FOLDER)
+              print("⚠️ Không tìm thấy file .xlsx nào trong thư mục:", SRC_FOLDER)
               print("Response:", res)
               exit()
 
-          print(f"🔎 Tìm thấy {len(files)} file trong thư mục nguồn.")
+          print(f"🔎 Tìm thấy {len(files)} file cần xử lý.")
 
-          # ===============================
-          # 🧠 XỬ LÝ MỖI FILE .XLSX
-          # ===============================
+          # ====== 🔁 XỬ LÝ MỖI FILE ======
           for f in files:
               name = f["name"]
-              if not name.lower().endswith(".xlsx"):
-                  continue
-
-              print(f"\n📥 Đang xử lý file: {name}")
-
-              file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{src_path_enc}/{urllib.parse.quote(name)}:/content"
-              excel_bytes = requests.get(file_url, headers=headers).content
+              print(f"\n📥 Đang xử lý: {name}")
+              download_url = f"{BASE_URL}/download?path={SRC_FOLDER}/{name}"
+              excel_bytes = requests.get(download_url, headers=headers).content
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
-                      # Tìm các file cache XML
                       record_files = [p for p in z.namelist() if "pivotCacheRecords" in p]
                       if not record_files:
-                          print("⚠️ Không tìm thấy pivotCacheRecords trong file.")
+                          print("⚠️ Không có PivotCacheRecords trong file.")
                           continue
 
                       for record_file in record_files:
-                          print(f"🔍 Đọc {record_file} ...")
+                          print(f"🔍 Bung {record_file} ...")
                           xml_data = z.read(record_file)
                           root = etree.fromstring(xml_data)
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
                           rows = []
-                          for r in root.findall(".//d:r", namespaces=ns):
-                              values = [x.text for x in r.findall(".//d:x", namespaces=ns)]
+                          for r in root.findall(".//d:r", ns):
+                              values = [x.text for x in r.findall(".//d:x", ns)]
                               if values:
                                   rows.append(values)
 
@@ -124,37 +79,33 @@ jobs:
                               continue
 
                           df = pd.DataFrame(rows)
-                          print(f"✅ Bung được {len(df)} dòng dữ liệu.")
+                          print(f"✅ Bung được {len(df)} dòng từ {name}.")
 
+                          # ====== 💾 GHI FILE ======
                           base_name = name.replace(".xlsx", "")
-                          out_xlsx_file = f"{OUT_XLSX}/{base_name}_cache.xlsx"
-                          out_parquet_file = f"{SRC_FOLDER}/{base_name}_cache.parquet"
 
-                          # ===============================
-                          # 💾 GHI FILE EXCEL
-                          # ===============================
+                          out_xlsx = f"{SRC_FOLDER}/{base_name}_cache.xlsx"
+                          out_parquet = f"{OUT_FOLDER}/{base_name}_cache.parquet"
+
                           buf_xlsx = io.BytesIO()
                           df.to_excel(buf_xlsx, index=False)
                           buf_xlsx.seek(0)
-                          requests.put(
-                              f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encode_path(out_xlsx_file)}:/content",
-                              headers=headers,
-                              data=buf_xlsx
-                          )
 
-                          # ===============================
-                          # 💾 GHI FILE PARQUET
-                          # ===============================
                           buf_parq = io.BytesIO()
                           df.to_parquet(buf_parq, index=False)
                           buf_parq.seek(0)
-                          requests.put(
-                              f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{encode_path(out_parquet_file)}:/content",
-                              headers=headers,
-                              data=buf_parq
-                          )
 
-                          print(f"📤 Đã ghi {base_name}_cache.xlsx và {base_name}_cache.parquet thành công!")
+                          # Upload qua gateway
+                          upload_xlsx = f"{BASE_URL}/upload?path={out_xlsx}"
+                          upload_parq = f"{BASE_URL}/upload?path={out_parquet}"
+
+                          up1 = requests.put(upload_xlsx, headers=headers, data=buf_xlsx)
+                          up2 = requests.put(upload_parq, headers=headers, data=buf_parq)
+
+                          if up1.ok and up2.ok:
+                              print(f"📤 Đã ghi {base_name}_cache.xlsx và .parquet thành công!")
+                          else:
+                              print("❌ Upload lỗi:", up1.text, up2.text)
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
