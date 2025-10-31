@@ -16,24 +16,6 @@ jobs:
         run: |
           pip install requests pandas lxml pyarrow openpyxl
 
-      name: Extract Pivot Cache to Excel and Parquet
-
-on:
-  workflow_dispatch:
-
-jobs:
-  extract:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.11
-
-      - name: Install dependencies
-        run: |
-          pip install requests pandas lxml pyarrow openpyxl
-
       - name: Run Pivot Cache Extractor
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
@@ -47,7 +29,9 @@ jobs:
           import io, os, zipfile, urllib.parse, requests, pandas as pd
           from lxml import etree
 
-          # ==== Config ====
+          # ===============================
+          # 🔐 CẤU HÌNH XÁC THỰC
+          # ===============================
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
@@ -55,7 +39,6 @@ jobs:
           SRC_FOLDER = os.environ["SRC_FOLDER"]
           OUT_XLSX = os.environ["OUT_XLSX"]
 
-          # ==== Auth ====
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
           token_data = {
               "grant_type": "client_credentials",
@@ -66,47 +49,62 @@ jobs:
           token = requests.post(token_url, data=token_data).json()["access_token"]
           headers = {"Authorization": f"Bearer {token}"}
 
-          # ==== Get drive info ====
+          # ===============================
+          # 📂 LẤY THÔNG TIN ONEDRIVE BUSINESS
+          # ===============================
           user_drive = requests.get(
               f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drive", headers=headers
           ).json()
           if "id" not in user_drive:
-              print("❌ Không thể lấy drive:", user_drive)
+              print("❌ Không thể lấy Drive ID:", user_drive)
               exit(1)
+
           drive_id = user_drive["id"]
           print("📁 Drive ID:", drive_id)
 
-          # ==== Encode đường dẫn OneDrive ====
-          def encode_path(path):
+          # ===============================
+          # 🧩 HÀM MÃ HÓA ĐƯỜNG DẪN
+          # ===============================
+          def encode_path(path: str) -> str:
+              """Mã hóa URL giữ nguyên dấu '/'"""
               return urllib.parse.quote(path, safe="/")
 
           src_path_enc = encode_path(SRC_FOLDER)
           out_path_enc = encode_path(OUT_XLSX)
 
-          # ==== List files ====
+          # ===============================
+          # 📋 LẤY DANH SÁCH FILE NGUỒN
+          # ===============================
           list_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{src_path_enc}:/children"
           res = requests.get(list_url, headers=headers).json()
           files = res.get("value", [])
+
           if not files:
-              print("⚠️ Không tìm thấy file trong thư mục nguồn.")
+              print("⚠️ Không tìm thấy file nào trong thư mục:", SRC_FOLDER)
               print("Response:", res)
               exit()
 
-          # ==== Loop files ====
+          print(f"🔎 Tìm thấy {len(files)} file trong thư mục nguồn.")
+
+          # ===============================
+          # 🧠 XỬ LÝ MỖI FILE .XLSX
+          # ===============================
           for f in files:
               name = f["name"]
               if not name.lower().endswith(".xlsx"):
                   continue
 
-              print(f"\n📥 Xử lý file: {name}")
+              print(f"\n📥 Đang xử lý file: {name}")
+
               file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{src_path_enc}/{urllib.parse.quote(name)}:/content"
               excel_bytes = requests.get(file_url, headers=headers).content
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
+                      # Tìm các file cache XML
                       record_files = [p for p in z.namelist() if "pivotCacheRecords" in p]
                       if not record_files:
-                          print("⚠️ Không tìm thấy pivotCacheRecords.")
+                          print("⚠️ Không tìm thấy pivotCacheRecords trong file.")
                           continue
 
                       for record_file in record_files:
@@ -126,13 +124,15 @@ jobs:
                               continue
 
                           df = pd.DataFrame(rows)
-                          print(f"✅ Bung được {len(df)} dòng.")
+                          print(f"✅ Bung được {len(df)} dòng dữ liệu.")
 
                           base_name = name.replace(".xlsx", "")
                           out_xlsx_file = f"{OUT_XLSX}/{base_name}_cache.xlsx"
                           out_parquet_file = f"{SRC_FOLDER}/{base_name}_cache.parquet"
 
-                          # ==== Write Excel ====
+                          # ===============================
+                          # 💾 GHI FILE EXCEL
+                          # ===============================
                           buf_xlsx = io.BytesIO()
                           df.to_excel(buf_xlsx, index=False)
                           buf_xlsx.seek(0)
@@ -142,7 +142,9 @@ jobs:
                               data=buf_xlsx
                           )
 
-                          # ==== Write Parquet ====
+                          # ===============================
+                          # 💾 GHI FILE PARQUET
+                          # ===============================
                           buf_parq = io.BytesIO()
                           df.to_parquet(buf_parq, index=False)
                           buf_parq.seek(0)
@@ -152,10 +154,10 @@ jobs:
                               data=buf_parq
                           )
 
-                          print(f"📤 Đã ghi {base_name}_cache.xlsx và .parquet thành công!")
+                          print(f"📤 Đã ghi {base_name}_cache.xlsx và {base_name}_cache.parquet thành công!")
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("🏁 Hoàn tất bung Pivot Cache.")
+          print("\n🏁 Hoàn tất bung toàn bộ Pivot Cache.")
           PYCODE
