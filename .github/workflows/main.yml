@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Full Decode + Export XLSX)
+name: Smart Pivot Cache Extract (Full Decode + Export XLSX to Pivot_To_Month)
 
 on:
   workflow_dispatch:
@@ -179,7 +179,7 @@ jobs:
                           else:
                               print(f"❌ Lỗi ghi {out_parquet}:", up.text)
 
-                          # ===== Ghi file XLSX vào Pivot_Month =====
+                          # ===== Ghi file XLSX vào Pivot_To_Month =====
                           out_xlsx = name.replace(".xlsx", "_cache.xlsx")
                           buf_xlsx = io.BytesIO()
                           with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as writer:
@@ -195,5 +195,5 @@ jobs:
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("\n🏁 Hoàn tất bung Pivot Cache và ghi XLSX.")
+          print("\n🏁 Hoàn tất bung Pivot Cache và ghi XLSX vào Pivot_To_Month.")
           PYCODE
