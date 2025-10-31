@@ -1,0 +1,54 @@
+name: Run Python Notebook
+
+# 1. Kích hoạt (Trigger)
+# Chạy khi nhận được tín hiệu 'repository_dispatch' từ bên ngoài
+on:
+  repository_dispatch:
+    # Lọc tín hiệu, chỉ chạy khi event_type là 'run-notebook'
+    types: [run-notebook]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Bước 1: Checkout code (nếu notebook của bạn nằm trong repo)
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Bước 2: Cài đặt Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # Bước 3: Cài đặt thư viện (Jupyter, Papermill và các thư viện của bạn)
+      # Papermill là công cụ chuẩn để chạy notebook từ dòng lệnh
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install papermill jupyter
+          # Thêm các thư viện bạn cần, ví dụ: pandas, pyarrow (để xử lý parquet)
+          pip install pandas pyarrow
+
+      # Bước 4: (Rất quan trọng) Nhận dữ liệu từ Power Automate
+      # Chúng ta sẽ nhận nội dung file (Base64) và tên file từ Power Automate
+      - name: Decode file from Base64
+        run: |
+          echo "Decoding file: ${{ github.event.client_payload.file_name }}"
+          echo "${{ github.event.client_payload.file_content_base64 }}" | base64 --decode > ${{ github.event.client_payload.file_name }}
+
+      # Bước 5: Chạy Notebook
+      - name: Run Notebook
+        run: |
+          papermill ${{ github.event.client_payload.file_name }} output_notebook.ipynb
+          # Dòng trên sẽ chạy notebook của bạn và lưu kết quả (đã chạy)
+          # vào file 'output_notebook.ipynb'
+
+      # Bước 6: (Tùy chọn) Lưu kết quả
+      # Bạn có thể lưu file parquet/xlsx/csv đã xử lý
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-data
+          # Giả sử notebook của bạn tạo ra file 'final_data.parquet'
+          path: final_data.parquet
