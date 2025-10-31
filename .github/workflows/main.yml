@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Full Decode + Overwrite)
+name: Smart Pivot Cache Extract (Full Decode v2)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Smart Pivot Extract
+      - name: Run Full Smart Pivot Extract
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -36,7 +36,7 @@ jobs:
           SRC_FOLDER = os.environ["SRC_FOLDER"]
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
-          print("🔐 Đang lấy access token ...")
+          print("🔐 Lấy access token ...")
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
           token_data = {
               "grant_type": "client_credentials",
@@ -96,7 +96,6 @@ jobs:
                       for rec in record_files:
                           print(f"🔍 Bung {rec} ...")
 
-                          # === Lấy phần sharedItems từ pivotCacheDefinition ===
                           def_path = rec.replace("Records", "Definition")
                           if def_path not in z.namelist():
                               print("⚠️ Không tìm thấy Definition tương ứng.")
@@ -105,7 +104,7 @@ jobs:
                           def_xml = etree.fromstring(z.read(def_path))
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-                          # Lấy danh sách cacheField + sharedItems
+                          # Lấy sharedItems và tên cột
                           fields = []
                           shared_lookup = []
                           for fnode in def_xml.findall(".//d:cacheField", ns):
@@ -129,23 +128,35 @@ jobs:
                               shared_lookup.append(shared)
                               fields.append(name_field)
 
-                          # === Giải nén dữ liệu thực từ pivotCacheRecords ===
+                          # === Decode pivotCacheRecords ===
                           root = etree.fromstring(z.read(rec))
                           rows = []
                           for row in root.findall(".//d:r", ns):
                               row_values = []
-                              for i, v in enumerate(row.findall("./d:x", ns)):
-                                  idx_text = v.text
+                              for i, cell in enumerate(row):
+                                  tag = etree.QName(cell).localname
+                                  v_attr = cell.get("v")
                                   val = None
-                                  if idx_text is not None:
+
+                                  if tag == "x" and v_attr is not None:
                                       try:
-                                          idx = int(idx_text)
+                                          idx = int(v_attr)
                                           if i < len(shared_lookup) and idx < len(shared_lookup[i]):
                                               val = shared_lookup[i][idx]
                                           else:
-                                              val = idx_text
+                                              val = idx
                                       except:
-                                          val = idx_text
+                                          val = v_attr
+                                  elif tag == "s":  # string literal
+                                      val = v_attr or cell.text
+                                  elif tag == "n":  # numeric literal
+                                      try:
+                                          val = float(v_attr or cell.text or 0)
+                                      except:
+                                          val = v_attr
+                                  elif tag == "b":  # boolean
+                                      val = "TRUE" if (v_attr == "1" or cell.text == "1") else "FALSE"
+
                                   row_values.append(val)
                               rows.append(row_values)
 
@@ -156,7 +167,7 @@ jobs:
                           df = pd.DataFrame(rows, columns=fields)
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ===== Ghi file Parquet (overwrite) =====
+                          # ===== Ghi file Parquet =====
                           out_name = name.replace(".xlsx", "_cache.parquet")
                           buf = io.BytesIO()
                           df.to_parquet(buf, index=False)
