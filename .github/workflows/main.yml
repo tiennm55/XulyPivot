@@ -24,7 +24,7 @@ jobs:
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
           SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
-          OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month"
+          OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
         run: |
           python - <<'PYCODE'
           import os, io, zipfile, requests, pandas as pd
@@ -188,7 +188,7 @@ jobs:
                           upload_xlsx_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_FOLDER}/{out_xlsx}:/content?@microsoft.graph.conflictBehavior=replace"
                           upx = requests.put(upload_xlsx_url, headers=headers, data=buf_xlsx)
                           if upx.ok:
-                              print(f"📗 Đã ghi {out_xlsx} vào Pivot_Month (sheet Detail).")
+                              print(f"📗 Đã ghi {out_xlsx} vào Pivot_To_Month (sheet Detail).")
                           else:
                               print(f"❌ Lỗi ghi {out_xlsx}:", upx.text)
 
