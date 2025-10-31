@@ -1,24 +1,3 @@
-name: Refresh Excel Pivot on OneDrive
-
-on:
-  schedule:
-    - cron: "0 2 * * *"  # chạy lúc 9h sáng giờ VN (UTC+7)
-  workflow_dispatch:      # cho phép bấm Run thủ công
-
-jobs:
-  refresh:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          pip install openpyxl requests
-
       - name: Run refresh script (all Excel files)
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
@@ -43,25 +22,41 @@ jobs:
               "client_secret": CLIENT_SECRET,
               "scope": "https://graph.microsoft.com/.default"
           }
-          token = requests.post(token_url, data=token_data).json()["access_token"]
+          token_resp = requests.post(token_url, data=token_data)
+          token = token_resp.json().get("access_token")
+          if not token:
+              print("❌ Không thể lấy token từ Azure. Response:", token_resp.text)
+              exit(1)
+
           headers = {"Authorization": f"Bearer {token}"}
 
-          # 📂 Liệt kê tất cả file trong thư mục OneDrive
-          list_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{FOLDER_PATH}:/children"
-          files = requests.get(list_url, headers=headers).json().get("value", [])
+          # 🧭 Tự động lấy DRIVE_ID của OneDrive Business
+          drives_resp = requests.get("https://graph.microsoft.com/v1.0/me/drives", headers=headers)
+          drives_json = drives_resp.json()
+          if "value" not in drives_json or not drives_json["value"]:
+              print("❌ Không thể truy cập danh sách drive:", drives_json)
+              exit(1)
+          DRIVE_ID = drives_json["value"][0]["id"]
+          print(f"📂 Drive ID: {DRIVE_ID}")
 
-          if not files:
+          # 📂 Liệt kê tất cả file trong thư mục OneDrive
+          list_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:{FOLDER_PATH}:/children"
+          files_resp = requests.get(list_url, headers=headers)
+          files_json = files_resp.json()
+
+          if "value" not in files_json or not files_json["value"]:
               print("⚠️ Không tìm thấy file nào trong thư mục:", FOLDER_PATH)
+              print("📄 Response:", files_json)
               exit()
 
           # 🧩 Lặp qua từng file .xlsx
-          for f in files:
+          for f in files_json["value"]:
               name = f["name"]
               if not name.lower().endswith(".xlsx"):
                   continue
 
               print(f"\n📥 Đang xử lý file: {name}")
-              file_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{FOLDER_PATH}/{name}:/content"
+              file_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:{FOLDER_PATH}/{name}:/content"
 
               try:
                   # 📥 Tải file
