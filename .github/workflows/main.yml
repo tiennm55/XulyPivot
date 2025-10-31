@@ -1,4 +1,4 @@
-name: Debug OneDrive Folder Structure
+name: Refresh Excel Pivot on OneDrive
 
 on:
   workflow_dispatch:  # chạy thủ công khi bấm "Run workflow" trong tab Actions
