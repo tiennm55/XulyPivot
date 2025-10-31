@@ -1,4 +1,4 @@
-name: Extract PivotCache via Excel Gateway (Graph Proxy)
+name: Extract PivotCache from Pivot_Month_Par via Excel Gateway
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
 jobs:
   extract:
     runs-on: ubuntu-latest
+
     steps:
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -21,8 +22,7 @@ jobs:
           BASE_URL: "https://msgraph-excel-gateway.tuanvietc5.workers.dev"
           APIKEY: "EG2025_1"
           UPN: "tiennm@tuanvietc5.id.vn"
-          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
-          OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
+          FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
         run: |
           python - <<'PYCODE'
           import io, os, zipfile, requests, pandas as pd
@@ -31,38 +31,36 @@ jobs:
           BASE_URL = os.environ["BASE_URL"]
           APIKEY = os.environ["APIKEY"]
           UPN = os.environ["UPN"]
-          SRC_FOLDER = os.environ["SRC_FOLDER"]
-          OUT_FOLDER = os.environ["OUT_FOLDER"]
+          FOLDER = os.environ["FOLDER"]
 
-          headers = {"x-api-key": APIKEY, "x-upn": UPN}
+          params = {"path": FOLDER, "upn": UPN, "key": APIKEY}
 
-          # ====== 📂 LẤY DANH SÁCH FILE (Graph endpoint) ======
-          list_url = f"{BASE_URL}/v1.0/me/drive/root:{SRC_FOLDER}:/children"
-          res = requests.get(list_url, headers=headers)
-
-          try:
-              files = res.json().get("value", [])
-          except Exception:
-              print("❌ Lỗi đọc phản hồi từ Gateway:", res.text)
+          # ====== 📂 LẤY DANH SÁCH FILE ======
+          list_url = f"{BASE_URL}/od/list"
+          res = requests.get(list_url, params=params)
+          if not res.ok:
+              print("❌ Lỗi khi lấy danh sách:", res.text)
               exit(1)
 
+          data = res.json()
+          files = [f for f in data.get("items", []) if f["name"].lower().endswith(".xlsx")]
+
           if not files:
-              print("⚠️ Không tìm thấy file .xlsx nào trong thư mục:", SRC_FOLDER)
+              print("⚠️ Không tìm thấy file .xlsx nào trong thư mục:", FOLDER)
               print("Response:", res.text)
               exit()
 
-          print(f"🔎 Tìm thấy {len(files)} file trong {SRC_FOLDER}")
+          print(f"🔎 Tìm thấy {len(files)} file trong {FOLDER}")
 
-          # ====== 🔁 XỬ LÝ MỖI FILE ======
+          # ====== 🔁 XỬ LÝ TỪNG FILE ======
           for f in files:
               name = f["name"]
-              if not name.lower().endswith(".xlsx"):
-                  continue
-
               print(f"\n📥 Đang xử lý: {name}")
 
-              file_url = f"{BASE_URL}/v1.0/me/drive/root:{SRC_FOLDER}/{name}:/content"
-              excel_bytes = requests.get(file_url, headers=headers).content
+              dl_params = {"path": FOLDER, "file": name, "upn": UPN, "key": APIKEY}
+              dl_url = f"{BASE_URL}/od/download"
+
+              excel_bytes = requests.get(dl_url, params=dl_params).content
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
@@ -90,29 +88,28 @@ jobs:
                           df = pd.DataFrame(rows)
                           print(f"✅ Bung được {len(df)} dòng từ {name}.")
 
-                          # ====== 💾 GHI FILE ======
+                          # ====== 💾 GHI RA FILE .PARQUET ======
                           base_name = name.replace(".xlsx", "")
-                          out_xlsx = f"{SRC_FOLDER}/{base_name}_cache.xlsx"
-                          out_parquet = f"{OUT_FOLDER}/{base_name}_cache.parquet"
-
-                          buf_xlsx = io.BytesIO()
-                          df.to_excel(buf_xlsx, index=False)
-                          buf_xlsx.seek(0)
+                          out_parquet = f"{base_name}_cache.parquet"
 
                           buf_parq = io.BytesIO()
                           df.to_parquet(buf_parq, index=False)
                           buf_parq.seek(0)
 
-                          upload_xlsx = f"{BASE_URL}/v1.0/me/drive/root:{out_xlsx}:/content"
-                          upload_parq = f"{BASE_URL}/v1.0/me/drive/root:{out_parquet}:/content"
+                          ul_params_parq = {
+                              "path": FOLDER,
+                              "file": out_parquet,
+                              "upn": UPN,
+                              "key": APIKEY
+                          }
 
-                          up1 = requests.put(upload_xlsx, headers=headers, data=buf_xlsx)
-                          up2 = requests.put(upload_parq, headers=headers, data=buf_parq)
+                          upload_url = f"{BASE_URL}/od/upload"
+                          up = requests.put(upload_url, params=ul_params_parq, data=buf_parq)
 
-                          if up1.ok and up2.ok:
-                              print(f"📤 Đã ghi {base_name}_cache.xlsx và .parquet thành công!")
+                          if up.ok:
+                              print(f"📤 Đã ghi {out_parquet} thành công!")
                           else:
-                              print("❌ Upload lỗi:", up1.text, up2.text)
+                              print(f"❌ Upload lỗi ({out_parquet}):", up.text)
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
