@@ -1,4 +1,4 @@
-name: Extract PivotCache from Pivot_Month_Par via Excel Gateway (Fixed Route)
+name: Extract Pivot Cache Directly via Microsoft Graph API
 
 on:
   workflow_dispatch:
@@ -17,74 +17,82 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Pivot Extract via Gateway (Fixed)
+      - name: Run Pivot Extract (Direct Graph)
         env:
-          BASE_URL: "https://msgraph-excel-gateway.tuanvietc5.workers.dev"
-          APIKEY: "EG2025_1"
-          UPN: "tiennm@tuanvietc5.id.vn"
-          FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
+          TENANT_ID: ${{ secrets.TENANT_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          USER_EMAIL: "tiennm@tuanvietc5.id.vn"
+          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
         run: |
           python - <<'PYCODE'
-          import io, os, zipfile, requests, pandas as pd
+          import os, io, zipfile, requests, pandas as pd
           from lxml import etree
 
-          BASE_URL = os.environ["BASE_URL"]
-          APIKEY = os.environ["APIKEY"]
-          UPN = os.environ["UPN"]
-          FOLDER = os.environ["FOLDER"]
+          TENANT_ID = os.environ["TENANT_ID"]
+          CLIENT_ID = os.environ["CLIENT_ID"]
+          CLIENT_SECRET = os.environ["CLIENT_SECRET"]
+          USER_EMAIL = os.environ["USER_EMAIL"]
+          SRC_FOLDER = os.environ["SRC_FOLDER"]
+          GRAPH_API = "https://graph.microsoft.com/v1.0"
 
-          params = {"path": FOLDER, "upn": UPN, "key": APIKEY}
+          # ===== 🔑 Lấy access token =====
+          print("🔐 Đang lấy access token ...")
+          token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+          token_data = {
+              "grant_type": "client_credentials",
+              "client_id": CLIENT_ID,
+              "client_secret": CLIENT_SECRET,
+              "scope": "https://graph.microsoft.com/.default",
+          }
+          token = requests.post(token_url, data=token_data).json().get("access_token")
+          if not token:
+              print("❌ Không lấy được token.")
+              exit(1)
+          headers = {"Authorization": f"Bearer {token}"}
 
-          # ====== 📂 LẤY DANH SÁCH FILE ======
-          list_url = f"{BASE_URL}/od/list"
-          res = requests.get(list_url, params=params)
+          # ===== 📂 Lấy Drive ID =====
+          drive_info = requests.get(f"{GRAPH_API}/users/{USER_EMAIL}/drive", headers=headers).json()
+          if "id" not in drive_info:
+              print("❌ Không lấy được Drive ID:", drive_info)
+              exit(1)
+          drive_id = drive_info["id"]
+          print("📁 Drive ID:", drive_id)
+
+          # ===== 🧭 Lấy danh sách file trong thư mục nguồn =====
+          encoded_path = requests.utils.quote(SRC_FOLDER)
+          list_url = f"{GRAPH_API}/drives/{drive_id}/root:{encoded_path}:/children"
+          res = requests.get(list_url, headers=headers)
           if not res.ok:
-              print("❌ Lỗi khi lấy danh sách:", res.text)
+              print("❌ Lỗi lấy danh sách:", res.text)
               exit(1)
 
-          data = res.json()
-          files = [f for f in data.get("items", []) if f["name"].lower().endswith(".xlsx")]
+          items = res.json().get("value", [])
+          xlsx_files = [i for i in items if i["name"].lower().endswith(".xlsx")]
+          print(f"🔎 Tìm thấy {len(xlsx_files)} file trong {SRC_FOLDER}")
 
-          if not files:
-              print("⚠️ Không tìm thấy file .xlsx nào trong thư mục:", FOLDER)
-              print("Response:", res.text)
-              exit()
-
-          print(f"🔎 Tìm thấy {len(files)} file trong {FOLDER}")
-
-          # ====== 🔁 XỬ LÝ TỪNG FILE ======
-          for f in files:
+          for f in xlsx_files:
               name = f["name"]
               print(f"\n📥 Đang xử lý: {name}")
 
-              # ✅ ĐỔI LẠI endpoint từ /od/download ➜ /od/file
-              dl_params = {"path": FOLDER, "name": name, "upn": UPN, "key": APIKEY}
-              dl_url = f"{BASE_URL}/od/file"
-
-              resp = requests.get(dl_url, params=dl_params)
+              dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{f['id']}/content"
+              resp = requests.get(dl_url, headers=headers)
               excel_bytes = resp.content
 
-              # 🧠 DEBUG KIỂM TRA ĐỊNH DẠNG FILE
               if excel_bytes[:4] != b'PK\x03\x04':
-                  print(f"⚠️ File {name} KHÔNG PHẢI ZIP (Excel). 20 byte đầu tiên là:", excel_bytes[:20])
-                  print("🔍 HTTP status:", resp.status_code)
-                  try:
-                      print("🔍 Response text:")
-                      print(resp.text[:500])
-                  except Exception as e:
-                      print("❌ Không thể đọc text response:", e)
+                  print(f"⚠️ {name} không phải Excel hợp lệ. (20 byte đầu: {excel_bytes[:20]})")
                   continue
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
-                      record_files = [p for p in z.namelist() if "pivotCacheRecords" in p]
-                      if not record_files:
-                          print("⚠️ Không có PivotCacheRecords trong file.")
+                      records = [p for p in z.namelist() if "pivotCacheRecords" in p]
+                      if not records:
+                          print("⚠️ Không có PivotCacheRecords.")
                           continue
 
-                      for record_file in record_files:
-                          print(f"🔍 Bung {record_file} ...")
-                          xml_data = z.read(record_file)
+                      for rec in records:
+                          print(f"🔍 Bung {rec} ...")
+                          xml_data = z.read(rec)
                           root = etree.fromstring(xml_data)
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
@@ -93,39 +101,28 @@ jobs:
                               values = [x.text for x in r.findall(".//d:x", ns)]
                               if values:
                                   rows.append(values)
-
                           if not rows:
-                              print("⚠️ Không có dữ liệu trong cache.")
+                              print("⚠️ Cache rỗng.")
                               continue
 
                           df = pd.DataFrame(rows)
-                          print(f"✅ Bung được {len(df)} dòng từ {name}.")
+                          print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ====== 💾 GHI RA FILE .PARQUET ======
-                          base_name = name.replace(".xlsx", "")
-                          out_parquet = f"{base_name}_cache.parquet"
+                          # ===== 💾 Ghi Parquet trở lại OneDrive =====
+                          out_name = name.replace(".xlsx", "_cache.parquet")
+                          buf = io.BytesIO()
+                          df.to_parquet(buf, index=False)
+                          buf.seek(0)
 
-                          buf_parq = io.BytesIO()
-                          df.to_parquet(buf_parq, index=False)
-                          buf_parq.seek(0)
-
-                          ul_params = {
-                              "path": FOLDER,
-                              "file": out_parquet,
-                              "upn": UPN,
-                              "key": APIKEY
-                          }
-
-                          upload_url = f"{BASE_URL}/od/upload"
-                          up = requests.put(upload_url, params=ul_params, data=buf_parq)
-
+                          upload_url = f"{GRAPH_API}/drives/{drive_id}/root:{SRC_FOLDER}/{out_name}:/content"
+                          up = requests.put(upload_url, headers=headers, data=buf)
                           if up.ok:
-                              print(f"📤 Đã ghi {out_parquet} thành công!")
+                              print(f"📤 Đã ghi {out_name} thành công!")
                           else:
-                              print(f"❌ Upload lỗi ({out_parquet}):", up.text)
+                              print(f"❌ Lỗi ghi {out_name}:", up.text)
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("\n🏁 Hoàn tất bung toàn bộ Pivot Cache.")
+          print("\n🏁 Hoàn tất bung Pivot Cache.")
           PYCODE
