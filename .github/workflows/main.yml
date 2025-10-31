@@ -1,10 +1,10 @@
-name: Debug OneDrive Root Folder
+name: Refresh Excel Pivot on OneDrive
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Chạy thủ công hoặc bạn có thể thêm schedule để tự động hằng ngày
 
 jobs:
-  debug-folders:
+  refresh:
     runs-on: ubuntu-latest
 
     steps:
@@ -14,21 +14,26 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install requests openpyxl
 
-      - name: Run OneDrive root folder scan
+      - name: Run refresh script (all Excel files)
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          FOLDER_PATH: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
+          USER_EMAIL: "tiennm@tuanvietc5.id.vn"
         run: |
           python - <<'PYCODE'
-          import os, requests
+          import io, os, requests
+          from openpyxl import load_workbook
 
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
-          USER_EMAIL = "tiennm@tuanvietc5.id.vn"
+          USER_EMAIL = os.environ["USER_EMAIL"]
+          FOLDER_PATH = os.environ["FOLDER_PATH"]
 
           # 🔐 Lấy access token
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -40,33 +45,62 @@ jobs:
           }
           token = requests.post(token_url, data=token_data).json().get("access_token")
           if not token:
-              print("❌ Không lấy được access token.")
+              print("❌ Không lấy được Access Token.")
               exit(1)
-
           headers = {"Authorization": f"Bearer {token}"}
 
-          # 🧭 Lấy danh sách ổ OneDrive
+          # 📁 Xác định ổ OneDrive Business của user
           drives = requests.get(f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drives", headers=headers).json()
-          for d in drives["value"]:
-              print("📂", d["name"], "→", d["id"])
-
-          # 👉 Chọn ổ OneDrive chính
           drive_id = [d["id"] for d in drives["value"] if "OneDrive" in d["name"]][0]
-          print(f"\n✅ Dùng Drive ID: {drive_id}\n")
+          print(f"📂 Drive ID: {drive_id}")
 
-          # 🗂️ In danh sách thư mục ngay trong root
-          print("📄 Danh sách thư mục trong root:")
-          root_resp = requests.get(f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children", headers=headers)
-          root_data = root_resp.json()
-          if "value" not in root_data:
-              print(root_data)
+          # 🗂️ Liệt kê toàn bộ file trong thư mục cần xử lý
+          list_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{FOLDER_PATH}:/children"
+          resp = requests.get(list_url, headers=headers)
+          files = resp.json().get("value", [])
+          if not files:
+              print(f"⚠️ Không tìm thấy file nào trong thư mục: {FOLDER_PATH}")
+              print("Response:", resp.text)
               exit()
-          for item in root_data["value"]:
-              print(" -", item["name"])
 
-          # 🧩 Thử truy cập thư mục 1.Job
-          print("\n📁 Nội dung thư mục /1.Job:")
-          job_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/1.Job:/children"
-          job_data = requests.get(job_url, headers=headers).json()
-          print(job_data)
+          # 🧮 Duyệt từng file Excel
+          for f in files:
+              name = f["name"]
+              if not name.lower().endswith(".xlsx"):
+                  continue
+              file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{FOLDER_PATH}/{name}:/content"
+
+              print(f"\n📥 Đang xử lý file: {name}")
+              try:
+                  # 📥 Tải file Excel
+                  data = requests.get(file_url, headers=headers).content
+                  wb = load_workbook(io.BytesIO(data), data_only=False)
+
+                  # 🔁 Refresh Pivot Cache
+                  refreshed = False
+                  for sheet in wb.worksheets:
+                      if hasattr(sheet, "_pivots"):
+                          for p in sheet._pivots:
+                              p.cache.refreshOnLoad = True
+                              refreshed = True
+
+                  if refreshed:
+                      print(f"✅ Đã bật refreshOnLoad cho Pivot trong {name}")
+                  else:
+                      print(f"ℹ️ Không tìm thấy PivotTable trong {name}")
+
+                  # 💾 Ghi đè ngược lên OneDrive
+                  buffer = io.BytesIO()
+                  wb.save(buffer)
+                  buffer.seek(0)
+                  put_resp = requests.put(file_url, headers=headers, data=buffer)
+                  if put_resp.status_code < 300:
+                      print(f"📤 Đã cập nhật {name} lên OneDrive thành công.")
+                  else:
+                      print(f"⚠️ Upload lỗi {name}: {put_resp.text}")
+
+              except Exception as e:
+                  print(f"❌ Lỗi khi xử lý {name}: {e}")
+
+          print("\n🏁 Hoàn tất xử lý tất cả các file Excel.")
           PYCODE
