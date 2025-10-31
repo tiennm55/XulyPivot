@@ -1,10 +1,10 @@
-name: Refresh Excel Pivot on OneDrive
+name: Extract Pivot Cache → Excel + Parquet on OneDrive
 
 on:
-  workflow_dispatch:  # Chạy thủ công hoặc bạn có thể thêm schedule để tự động hằng ngày
+  workflow_dispatch:
 
 jobs:
-  refresh:
+  pivot_extract:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,27 +15,29 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests openpyxl
+          pip install requests pandas pyarrow lxml openpyxl
 
-      - name: Run refresh script (all Excel files)
+      - name: Extract Pivot Cache and Save Outputs
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          FOLDER_PATH: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
+          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
+          OUT_XLSX: "/1.Job/2425/1. Tracking/Pivot_Month"
         run: |
           python - <<'PYCODE'
-          import io, os, requests
-          from openpyxl import load_workbook
+          import io, os, zipfile, requests, pandas as pd
+          from lxml import etree
 
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
           USER_EMAIL = os.environ["USER_EMAIL"]
-          FOLDER_PATH = os.environ["FOLDER_PATH"]
+          SRC_FOLDER = os.environ["SRC_FOLDER"]
+          OUT_XLSX = os.environ["OUT_XLSX"]
 
-          # 🔐 Lấy access token
+          # === 1️⃣ Lấy access token ===
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
           token_data = {
               "grant_type": "client_credentials",
@@ -45,62 +47,80 @@ jobs:
           }
           token = requests.post(token_url, data=token_data).json().get("access_token")
           if not token:
-              print("❌ Không lấy được Access Token.")
+              print("❌ Không lấy được access token.")
               exit(1)
           headers = {"Authorization": f"Bearer {token}"}
 
-          # 📁 Xác định ổ OneDrive Business của user
+          # === 2️⃣ Lấy OneDrive Drive ID ===
           drives = requests.get(f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drives", headers=headers).json()
           drive_id = [d["id"] for d in drives["value"] if "OneDrive" in d["name"]][0]
           print(f"📂 Drive ID: {drive_id}")
 
-          # 🗂️ Liệt kê toàn bộ file trong thư mục cần xử lý
-          list_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{FOLDER_PATH}:/children"
-          resp = requests.get(list_url, headers=headers)
-          files = resp.json().get("value", [])
+          # === 3️⃣ Liệt kê file nguồn ===
+          list_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{SRC_FOLDER}:/children"
+          files = requests.get(list_url, headers=headers).json().get("value", [])
           if not files:
-              print(f"⚠️ Không tìm thấy file nào trong thư mục: {FOLDER_PATH}")
-              print("Response:", resp.text)
+              print("⚠️ Không tìm thấy file nào trong thư mục:", SRC_FOLDER)
               exit()
 
-          # 🧮 Duyệt từng file Excel
+          # === 4️⃣ Xử lý từng file Excel ===
           for f in files:
               name = f["name"]
               if not name.lower().endswith(".xlsx"):
                   continue
-              file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{FOLDER_PATH}/{name}:/content"
 
-              print(f"\n📥 Đang xử lý file: {name}")
+              print(f"\n📥 Đang bung Pivot Cache của: {name}")
+              file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{SRC_FOLDER}/{name}:/content"
+              excel_bytes = requests.get(file_url, headers=headers).content
+
               try:
-                  # 📥 Tải file Excel
-                  data = requests.get(file_url, headers=headers).content
-                  wb = load_workbook(io.BytesIO(data), data_only=False)
+                  with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
+                      record_files = [f for f in z.namelist() if f.startswith("xl/pivotCache/pivotCacheRecords")]
+                      if not record_files:
+                          print("⚠️ Không có Pivot Cache trong file này.")
+                          continue
 
-                  # 🔁 Refresh Pivot Cache
-                  refreshed = False
-                  for sheet in wb.worksheets:
-                      if hasattr(sheet, "_pivots"):
-                          for p in sheet._pivots:
-                              p.cache.refreshOnLoad = True
-                              refreshed = True
+                      all_rows = []
+                      for rf in record_files:
+                          xml_data = z.read(rf)
+                          root = etree.fromstring(xml_data)
+                          for rec in root.findall(".//r"):
+                              row_data = [child.text for child in rec]
+                              all_rows.append(row_data)
 
-                  if refreshed:
-                      print(f"✅ Đã bật refreshOnLoad cho Pivot trong {name}")
-                  else:
-                      print(f"ℹ️ Không tìm thấy PivotTable trong {name}")
+                      if not all_rows:
+                          print("⚠️ Không có dữ liệu trong cache.")
+                          continue
 
-                  # 💾 Ghi đè ngược lên OneDrive
-                  buffer = io.BytesIO()
-                  wb.save(buffer)
-                  buffer.seek(0)
-                  put_resp = requests.put(file_url, headers=headers, data=buffer)
-                  if put_resp.status_code < 300:
-                      print(f"📤 Đã cập nhật {name} lên OneDrive thành công.")
-                  else:
-                      print(f"⚠️ Upload lỗi {name}: {put_resp.text}")
+                      df = pd.DataFrame(all_rows)
+                      print(f"✅ Bung {len(df)} dòng từ Pivot Cache.")
+
+                      base_name = name.replace(".xlsx", "")
+
+                      # === 5️⃣ Ghi ra Excel (Pivot_Month) ===
+                      xlsx_buf = io.BytesIO()
+                      df.to_excel(xlsx_buf, index=False)
+                      xlsx_buf.seek(0)
+                      xlsx_path = f"{OUT_XLSX}/{base_name}_cache.xlsx"
+                      requests.put(
+                          f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{xlsx_path}:/content",
+                          headers=headers, data=xlsx_buf
+                      )
+
+                      # === 6️⃣ Ghi ra Parquet (ngay tại Pivot_Month_Par) ===
+                      pq_buf = io.BytesIO()
+                      df.to_parquet(pq_buf, index=False)
+                      pq_buf.seek(0)
+                      pq_path = f"{SRC_FOLDER}/{base_name}_cache.parquet"
+                      requests.put(
+                          f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{pq_path}:/content",
+                          headers=headers, data=pq_buf
+                      )
+
+                      print(f"📤 Đã ghi: {base_name}_cache.xlsx → Pivot_Month, {base_name}_cache.parquet → Pivot_Month_Par")
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("\n🏁 Hoàn tất xử lý tất cả các file Excel.")
+          print("\n🏁 Hoàn tất bung Pivot Cache cho tất cả file Excel.")
           PYCODE
