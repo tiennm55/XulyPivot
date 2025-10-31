@@ -1,3 +1,24 @@
+name: Refresh Excel Pivot on OneDrive
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # chạy tự động mỗi ngày lúc 9h sáng VN (2h UTC)
+  workflow_dispatch:      # cho phép chạy thủ công
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install openpyxl requests
+
       - name: Run refresh script (all Excel files)
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
