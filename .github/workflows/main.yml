@@ -1,4 +1,4 @@
-name: Extract PivotCache from Pivot_Month_Par via Excel Gateway
+name: Extract PivotCache from Pivot_Month_Par via Excel Gateway (Debug Mode)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Pivot Extract via Gateway
+      - name: Run Pivot Extract via Gateway (Debug)
         env:
           BASE_URL: "https://msgraph-excel-gateway.tuanvietc5.workers.dev"
           APIKEY: "EG2025_1"
@@ -60,7 +60,19 @@ jobs:
               dl_params = {"path": FOLDER, "file": name, "upn": UPN, "key": APIKEY}
               dl_url = f"{BASE_URL}/od/download"
 
-              excel_bytes = requests.get(dl_url, params=dl_params).content
+              resp = requests.get(dl_url, params=dl_params)
+              excel_bytes = resp.content
+
+              # 🧠 DEBUG KIỂM TRA ĐỊNH DẠNG FILE
+              if excel_bytes[:4] != b'PK\x03\x04':
+                  print(f"⚠️ File {name} KHÔNG PHẢI ZIP (Excel). 20 byte đầu tiên là:", excel_bytes[:20])
+                  print("🔍 HTTP status:", resp.status_code)
+                  try:
+                      print("🔍 Response text:")
+                      print(resp.text[:500])
+                  except Exception as e:
+                      print("❌ Không thể đọc text response:", e)
+                  continue
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
@@ -96,7 +108,7 @@ jobs:
                           df.to_parquet(buf_parq, index=False)
                           buf_parq.seek(0)
 
-                          ul_params_parq = {
+                          ul_params = {
                               "path": FOLDER,
                               "file": out_parquet,
                               "upn": UPN,
@@ -104,7 +116,7 @@ jobs:
                           }
 
                           upload_url = f"{BASE_URL}/od/upload"
-                          up = requests.put(upload_url, params=ul_params_parq, data=buf_parq)
+                          up = requests.put(upload_url, params=ul_params, data=buf_parq)
 
                           if up.ok:
                               print(f"📤 Đã ghi {out_parquet} thành công!")
