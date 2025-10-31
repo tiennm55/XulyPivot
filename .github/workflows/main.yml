@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Full Decode v2)
+name: Smart Pivot Cache Extract (Full Decode + Export XLSX)
 
 on:
   workflow_dispatch:
@@ -17,13 +17,14 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Full Smart Pivot Extract
+      - name: Run Full Smart Pivot Extract + Export XLSX
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
           SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
+          OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month"
         run: |
           python - <<'PYCODE'
           import os, io, zipfile, requests, pandas as pd
@@ -34,6 +35,7 @@ jobs:
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
           USER_EMAIL = os.environ["USER_EMAIL"]
           SRC_FOLDER = os.environ["SRC_FOLDER"]
+          OUT_FOLDER = os.environ["OUT_FOLDER"]
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
           print("🔐 Lấy access token ...")
@@ -59,7 +61,7 @@ jobs:
           drive_id = drive_info["id"]
           print("📁 Drive ID:", drive_id)
 
-          # ===== Lấy danh sách file trong thư mục =====
+          # ===== Lấy danh sách file trong thư mục nguồn =====
           encoded_path = requests.utils.quote(SRC_FOLDER)
           list_url = f"{GRAPH_API}/drives/{drive_id}/root:{encoded_path}:/children"
           res = requests.get(list_url, headers=headers)
@@ -104,7 +106,7 @@ jobs:
                           def_xml = etree.fromstring(z.read(def_path))
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-                          # Lấy sharedItems và tên cột
+                          # ===== Lấy sharedItems + tên cột =====
                           fields = []
                           shared_lookup = []
                           for fnode in def_xml.findall(".//d:cacheField", ns):
@@ -128,7 +130,7 @@ jobs:
                               shared_lookup.append(shared)
                               fields.append(name_field)
 
-                          # === Decode pivotCacheRecords ===
+                          # ===== Đọc pivotCacheRecords =====
                           root = etree.fromstring(z.read(rec))
                           rows = []
                           for row in root.findall(".//d:r", ns):
@@ -137,7 +139,6 @@ jobs:
                                   tag = etree.QName(cell).localname
                                   v_attr = cell.get("v")
                                   val = None
-
                                   if tag == "x" and v_attr is not None:
                                       try:
                                           idx = int(v_attr)
@@ -147,16 +148,15 @@ jobs:
                                               val = idx
                                       except:
                                           val = v_attr
-                                  elif tag == "s":  # string literal
+                                  elif tag == "s":
                                       val = v_attr or cell.text
-                                  elif tag == "n":  # numeric literal
+                                  elif tag == "n":
                                       try:
                                           val = float(v_attr or cell.text or 0)
                                       except:
                                           val = v_attr
-                                  elif tag == "b":  # boolean
+                                  elif tag == "b":
                                       val = "TRUE" if (v_attr == "1" or cell.text == "1") else "FALSE"
-
                                   row_values.append(val)
                               rows.append(row_values)
 
@@ -168,20 +168,32 @@ jobs:
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
                           # ===== Ghi file Parquet =====
-                          out_name = name.replace(".xlsx", "_cache.parquet")
-                          buf = io.BytesIO()
-                          df.to_parquet(buf, index=False)
-                          buf.seek(0)
-
-                          upload_url = f"{GRAPH_API}/drives/{drive_id}/root:{SRC_FOLDER}/{out_name}:/content?@microsoft.graph.conflictBehavior=replace"
-                          up = requests.put(upload_url, headers=headers, data=buf)
+                          out_parquet = name.replace(".xlsx", "_cache.parquet")
+                          buf_par = io.BytesIO()
+                          df.to_parquet(buf_par, index=False)
+                          buf_par.seek(0)
+                          upload_parquet_url = f"{GRAPH_API}/drives/{drive_id}/root:{SRC_FOLDER}/{out_parquet}:/content?@microsoft.graph.conflictBehavior=replace"
+                          up = requests.put(upload_parquet_url, headers=headers, data=buf_par)
                           if up.ok:
-                              print(f"📤 Đã ghi {out_name} thành công (overwrite).")
+                              print(f"📤 Đã ghi {out_parquet} thành công (overwrite).")
                           else:
-                              print(f"❌ Lỗi ghi {out_name}:", up.text)
+                              print(f"❌ Lỗi ghi {out_parquet}:", up.text)
+
+                          # ===== Ghi file XLSX vào Pivot_Month =====
+                          out_xlsx = name.replace(".xlsx", "_cache.xlsx")
+                          buf_xlsx = io.BytesIO()
+                          with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as writer:
+                              df.to_excel(writer, index=False, sheet_name="Detail")
+                          buf_xlsx.seek(0)
+                          upload_xlsx_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_FOLDER}/{out_xlsx}:/content?@microsoft.graph.conflictBehavior=replace"
+                          upx = requests.put(upload_xlsx_url, headers=headers, data=buf_xlsx)
+                          if upx.ok:
+                              print(f"📗 Đã ghi {out_xlsx} vào Pivot_Month (sheet Detail).")
+                          else:
+                              print(f"❌ Lỗi ghi {out_xlsx}:", upx.text)
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("\n🏁 Hoàn tất bung Pivot Cache.")
+          print("\n🏁 Hoàn tất bung Pivot Cache và ghi XLSX.")
           PYCODE
