@@ -1,4 +1,4 @@
-name: Extract PivotCache from Pivot_Month_Par via Excel Gateway (Debug Mode)
+name: Extract PivotCache from Pivot_Month_Par via Excel Gateway (Fixed Route)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Pivot Extract via Gateway (Debug)
+      - name: Run Pivot Extract via Gateway (Fixed)
         env:
           BASE_URL: "https://msgraph-excel-gateway.tuanvietc5.workers.dev"
           APIKEY: "EG2025_1"
@@ -57,8 +57,9 @@ jobs:
               name = f["name"]
               print(f"\n📥 Đang xử lý: {name}")
 
-              dl_params = {"path": FOLDER, "file": name, "upn": UPN, "key": APIKEY}
-              dl_url = f"{BASE_URL}/od/download"
+              # ✅ ĐỔI LẠI endpoint từ /od/download ➜ /od/file
+              dl_params = {"path": FOLDER, "name": name, "upn": UPN, "key": APIKEY}
+              dl_url = f"{BASE_URL}/od/file"
 
               resp = requests.get(dl_url, params=dl_params)
               excel_bytes = resp.content
