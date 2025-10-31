@@ -1,4 +1,4 @@
-name: Extract PivotCache via Excel Gateway
+name: Extract PivotCache via Excel Gateway (Graph Proxy)
 
 on:
   workflow_dispatch:
@@ -36,24 +36,33 @@ jobs:
 
           headers = {"x-api-key": APIKEY, "x-upn": UPN}
 
-          # ====== 📂 LẤY DANH SÁCH FILE ======
-          list_url = f"{BASE_URL}/list?path={SRC_FOLDER}"
-          res = requests.get(list_url, headers=headers).json()
+          # ====== 📂 LẤY DANH SÁCH FILE (Graph endpoint) ======
+          list_url = f"{BASE_URL}/v1.0/me/drive/root:{SRC_FOLDER}:/children"
+          res = requests.get(list_url, headers=headers)
 
-          files = [f for f in res.get("files", []) if f["name"].lower().endswith(".xlsx")]
+          try:
+              files = res.json().get("value", [])
+          except Exception:
+              print("❌ Lỗi đọc phản hồi từ Gateway:", res.text)
+              exit(1)
+
           if not files:
               print("⚠️ Không tìm thấy file .xlsx nào trong thư mục:", SRC_FOLDER)
-              print("Response:", res)
+              print("Response:", res.text)
               exit()
 
-          print(f"🔎 Tìm thấy {len(files)} file cần xử lý.")
+          print(f"🔎 Tìm thấy {len(files)} file trong {SRC_FOLDER}")
 
           # ====== 🔁 XỬ LÝ MỖI FILE ======
           for f in files:
               name = f["name"]
+              if not name.lower().endswith(".xlsx"):
+                  continue
+
               print(f"\n📥 Đang xử lý: {name}")
-              download_url = f"{BASE_URL}/download?path={SRC_FOLDER}/{name}"
-              excel_bytes = requests.get(download_url, headers=headers).content
+
+              file_url = f"{BASE_URL}/v1.0/me/drive/root:{SRC_FOLDER}/{name}:/content"
+              excel_bytes = requests.get(file_url, headers=headers).content
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
@@ -83,7 +92,6 @@ jobs:
 
                           # ====== 💾 GHI FILE ======
                           base_name = name.replace(".xlsx", "")
-
                           out_xlsx = f"{SRC_FOLDER}/{base_name}_cache.xlsx"
                           out_parquet = f"{OUT_FOLDER}/{base_name}_cache.parquet"
 
@@ -95,9 +103,8 @@ jobs:
                           df.to_parquet(buf_parq, index=False)
                           buf_parq.seek(0)
 
-                          # Upload qua gateway
-                          upload_xlsx = f"{BASE_URL}/upload?path={out_xlsx}"
-                          upload_parq = f"{BASE_URL}/upload?path={out_parquet}"
+                          upload_xlsx = f"{BASE_URL}/v1.0/me/drive/root:{out_xlsx}:/content"
+                          upload_parq = f"{BASE_URL}/v1.0/me/drive/root:{out_parquet}:/content"
 
                           up1 = requests.put(upload_xlsx, headers=headers, data=buf_xlsx)
                           up2 = requests.put(upload_parq, headers=headers, data=buf_parq)
