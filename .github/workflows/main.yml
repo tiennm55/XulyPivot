@@ -1,3 +1,22 @@
+name: Debug OneDrive Folder Structure
+
+on:
+  workflow_dispatch:  # chạy thủ công khi bấm "Run workflow" trong tab Actions
+
+jobs:
+  debug-folders:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
       - name: Run refresh script (debug folders)
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
@@ -21,6 +40,9 @@
               "scope": "https://graph.microsoft.com/.default"
           }
           token = requests.post(token_url, data=token_data).json().get("access_token")
+          if not token:
+              print("❌ Không lấy được Access Token. Kiểm tra lại App Entra và Secrets.")
+              exit(1)
           headers = {"Authorization": f"Bearer {token}"}
 
           # 📁 Lấy Drive ID
@@ -29,14 +51,15 @@
           DRIVE_ID = drive_data["value"][0]["id"]
           print(f"📂 Drive ID: {DRIVE_ID}\n")
 
-          # 📁 In danh sách thư mục gốc
+          # 📄 Danh sách thư mục trong root
           print("📄 Danh sách thư mục trong root:")
           root_resp = requests.get(f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root/children", headers=headers)
-          for item in root_resp.json().get("value", []):
+          root_data = root_resp.json()
+          for item in root_data.get("value", []):
               print(" -", item["name"])
 
-          # 📁 In thử nội dung thư mục "1.Job"
-          print("\n📁 Nội dung trong /1.Job:")
+          # 📁 Thử in nội dung thư mục 1.Job
+          print("\n📁 Nội dung thư mục /1.Job:")
           job_resp = requests.get(f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/1.Job:/children", headers=headers)
           print(job_resp.json())
           PYCODE
