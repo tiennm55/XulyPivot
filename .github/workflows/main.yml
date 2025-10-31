@@ -1,7 +1,7 @@
-name: Debug OneDrive Folder Structure
+name: Debug OneDrive Root Folder
 
 on:
-  workflow_dispatch:  # Cho phép bạn chạy thủ công từ tab Actions
+  workflow_dispatch:
 
 jobs:
   debug-folders:
@@ -14,10 +14,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install requests
+        run: pip install requests
 
-      - name: Run refresh script (debug OneDrive Documents)
+      - name: Run OneDrive root folder scan
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -29,7 +28,7 @@ jobs:
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
-          USER_EMAIL = "tiennm@tuanvietc5.id.vn"  # đổi nếu email OneDrive khác
+          USER_EMAIL = "tiennm@tuanvietc5.id.vn"
 
           # 🔐 Lấy access token
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -39,48 +38,35 @@ jobs:
               "client_secret": CLIENT_SECRET,
               "scope": "https://graph.microsoft.com/.default"
           }
-          token_resp = requests.post(token_url, data=token_data)
-          token_json = token_resp.json()
-          token = token_json.get("access_token")
-
+          token = requests.post(token_url, data=token_data).json().get("access_token")
           if not token:
-              print("❌ Không lấy được Access Token:")
-              print(token_json)
+              print("❌ Không lấy được access token.")
               exit(1)
 
           headers = {"Authorization": f"Bearer {token}"}
 
-          # 🔍 Lấy danh sách tất cả drive của user (bao gồm Documents)
-          drives_url = f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drives"
-          drives_resp = requests.get(drives_url, headers=headers)
-          drives_data = drives_resp.json()
-          if "value" not in drives_data:
-              print("❌ Không tìm thấy drives:", drives_data)
-              exit(1)
+          # 🧭 Lấy danh sách ổ OneDrive
+          drives = requests.get(f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drives", headers=headers).json()
+          for d in drives["value"]:
+              print("📂", d["name"], "→", d["id"])
 
-          print("📁 Danh sách Drive của user:")
-          for d in drives_data["value"]:
-              print(f" - {d['name']} (id: {d['id']})")
+          # 👉 Chọn ổ OneDrive chính
+          drive_id = [d["id"] for d in drives["value"] if "OneDrive" in d["name"]][0]
+          print(f"\n✅ Dùng Drive ID: {drive_id}\n")
 
-          # 🔧 Chọn drive đầu tiên (thường là 'Documents')
-          DRIVE_ID = drives_data["value"][0]["id"]
-          print(f"\n📂 Sử dụng Drive ID: {DRIVE_ID}\n")
+          # 🗂️ In danh sách thư mục ngay trong root
+          print("📄 Danh sách thư mục trong root:")
+          root_resp = requests.get(f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root/children", headers=headers)
+          root_data = root_resp.json()
+          if "value" not in root_data:
+              print(root_data)
+              exit()
+          for item in root_data["value"]:
+              print(" -", item["name"])
 
-          # 📄 In danh sách trong /Documents
-          docs_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/Documents:/children"
-          docs_resp = requests.get(docs_url, headers=headers)
-          docs_json = docs_resp.json()
-
-          print("📄 Danh sách trong /Documents:")
-          if "value" in docs_json:
-              for item in docs_json["value"]:
-                  print(" -", item["name"])
-          else:
-              print(docs_json)
-
-          # 📁 In nội dung trong /Documents/1.Job
-          print("\n📁 Nội dung trong /Documents/1.Job:")
-          job_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:/Documents/1.Job:/children"
-          job_resp = requests.get(job_url, headers=headers)
-          print(job_resp.json())
+          # 🧩 Thử truy cập thư mục 1.Job
+          print("\n📁 Nội dung thư mục /1.Job:")
+          job_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/1.Job:/children"
+          job_data = requests.get(job_url, headers=headers).json()
+          print(job_data)
           PYCODE
