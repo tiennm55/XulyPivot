@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Fixed Overwrite)
+name: Smart Pivot Cache Extract (Full Decode + Overwrite)
 
 on:
   workflow_dispatch:
@@ -95,28 +95,57 @@ jobs:
 
                       for rec in record_files:
                           print(f"🔍 Bung {rec} ...")
-                          xml_data = z.read(rec)
-                          root = etree.fromstring(xml_data)
+
+                          # === Lấy phần sharedItems từ pivotCacheDefinition ===
+                          def_path = rec.replace("Records", "Definition")
+                          if def_path not in z.namelist():
+                              print("⚠️ Không tìm thấy Definition tương ứng.")
+                              continue
+
+                          def_xml = etree.fromstring(z.read(def_path))
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-                          # Lấy tên cột từ pivotCacheDefinition
-                          col_names = []
-                          def_path = rec.replace("Records", "Definition")
-                          if def_path in z.namelist():
-                              def_xml = etree.fromstring(z.read(def_path))
-                              fields = def_xml.findall(".//d:cacheField", ns)
-                              col_names = [f.get("name") or f.get("caption") or f"Field{i}" for i, f in enumerate(fields)]
+                          # Lấy danh sách cacheField + sharedItems
+                          fields = []
+                          shared_lookup = []
+                          for fnode in def_xml.findall(".//d:cacheField", ns):
+                              name_field = fnode.get("name") or fnode.get("caption") or "Field"
+                              shared = []
+                              si = fnode.find(".//d:sharedItems", ns)
+                              if si is not None:
+                                  for item in si:
+                                      tag = etree.QName(item).localname
+                                      val = None
+                                      if tag == "s":
+                                          val = item.get("v") or item.text
+                                      elif tag == "n":
+                                          try:
+                                              val = float(item.get("v") or item.text or 0)
+                                          except:
+                                              val = item.get("v") or item.text
+                                      elif tag == "b":
+                                          val = "TRUE" if item.get("v") == "1" else "FALSE"
+                                      shared.append(val)
+                              shared_lookup.append(shared)
+                              fields.append(name_field)
 
+                          # === Giải nén dữ liệu thực từ pivotCacheRecords ===
+                          root = etree.fromstring(z.read(rec))
                           rows = []
-                          for r in root.findall(".//d:r", ns):
+                          for row in root.findall(".//d:r", ns):
                               row_values = []
-                              for c in r:
-                                  tag = etree.QName(c).localname
+                              for i, v in enumerate(row.findall("./d:x", ns)):
+                                  idx_text = v.text
                                   val = None
-                                  if tag in ("n", "v", "s", "x"):  # numeric, string, index
-                                      val = c.text
-                                  elif tag == "b":  # boolean
-                                      val = "TRUE" if c.text == "1" else "FALSE"
+                                  if idx_text is not None:
+                                      try:
+                                          idx = int(idx_text)
+                                          if i < len(shared_lookup) and idx < len(shared_lookup[i]):
+                                              val = shared_lookup[i][idx]
+                                          else:
+                                              val = idx_text
+                                      except:
+                                          val = idx_text
                                   row_values.append(val)
                               rows.append(row_values)
 
@@ -124,10 +153,10 @@ jobs:
                               print("⚠️ Cache rỗng.")
                               continue
 
-                          df = pd.DataFrame(rows, columns=col_names if col_names else None)
+                          df = pd.DataFrame(rows, columns=fields)
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ===== Ghi file Parquet (ghi đè nếu trùng) =====
+                          # ===== Ghi file Parquet (overwrite) =====
                           out_name = name.replace(".xlsx", "_cache.parquet")
                           buf = io.BytesIO()
                           df.to_parquet(buf, index=False)
