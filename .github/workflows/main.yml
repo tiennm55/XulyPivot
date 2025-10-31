@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Direct Microsoft Graph API)
+name: Smart Pivot Cache Extract (Fixed Overwrite)
 
 on:
   workflow_dispatch:
@@ -44,10 +44,11 @@ jobs:
               "client_secret": CLIENT_SECRET,
               "scope": "https://graph.microsoft.com/.default",
           }
-          token = requests.post(token_url, data=token_data).json().get("access_token")
-          if not token:
-              print("❌ Không lấy được token.")
+          token_res = requests.post(token_url, data=token_data)
+          if not token_res.ok:
+              print("❌ Không lấy được token:", token_res.text)
               exit(1)
+          token = token_res.json().get("access_token")
           headers = {"Authorization": f"Bearer {token}"}
 
           # ===== Lấy Drive ID =====
@@ -126,16 +127,16 @@ jobs:
                           df = pd.DataFrame(rows, columns=col_names if col_names else None)
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ===== Ghi file Parquet =====
+                          # ===== Ghi file Parquet (ghi đè nếu trùng) =====
                           out_name = name.replace(".xlsx", "_cache.parquet")
                           buf = io.BytesIO()
                           df.to_parquet(buf, index=False)
                           buf.seek(0)
 
-                          upload_url = f"{GRAPH_API}/drives/{drive_id}/root:{SRC_FOLDER}/{out_name}:/content"
+                          upload_url = f"{GRAPH_API}/drives/{drive_id}/root:{SRC_FOLDER}/{out_name}:/content?@microsoft.graph.conflictBehavior=replace"
                           up = requests.put(upload_url, headers=headers, data=buf)
                           if up.ok:
-                              print(f"📤 Đã ghi {out_name} thành công!")
+                              print(f"📤 Đã ghi {out_name} thành công (overwrite).")
                           else:
                               print(f"❌ Lỗi ghi {out_name}:", up.text)
 
