@@ -14,9 +14,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests pandas lxml pyarrow
+          pip install requests pandas lxml pyarrow openpyxl
 
-      - name: Run pivot cache extractor
+      - name: Run Pivot Cache Extractor
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -26,7 +26,7 @@ jobs:
           OUT_XLSX: "/1.Job/2425/1. Tracking/Pivot_Month"
         run: |
           python - <<'PYCODE'
-          import io, os, requests, zipfile, pandas as pd
+          import io, os, zipfile, requests, pandas as pd
           from lxml import etree
 
           # ====== Cấu hình OAuth ======
@@ -47,25 +47,32 @@ jobs:
           token = requests.post(token_url, data=token_data).json()["access_token"]
           headers = {"Authorization": f"Bearer {token}"}
 
-          # ====== Lấy drive_id ======
-          drives = requests.get("https://graph.microsoft.com/v1.0/me/drives", headers=headers).json()
-          drive_id = drives["value"][0]["id"]
+          # ====== Lấy Drive ID ======
+          user_drive = requests.get(
+              f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drive",
+              headers=headers
+          ).json()
+          if "id" not in user_drive:
+              print("❌ Không thể lấy drive:", user_drive)
+              exit(1)
+          drive_id = user_drive["id"]
           print("📁 Drive ID:", drive_id)
 
-          # ====== Lấy danh sách file trong thư mục nguồn ======
+          # ====== Lấy danh sách file trong Pivot_Month_Par ======
           list_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{SRC_FOLDER}:/children"
-          files = requests.get(list_url, headers=headers).json().get("value", [])
+          res = requests.get(list_url, headers=headers).json()
+          files = res.get("value", [])
           if not files:
-              print("⚠️ Không tìm thấy file nào trong thư mục:", SRC_FOLDER)
+              print("⚠️ Không tìm thấy file nào trong thư mục nguồn.")
+              print("Response:", res)
               exit()
 
-          # ====== Xử lý từng file Excel ======
           for f in files:
               name = f["name"]
               if not name.lower().endswith(".xlsx"):
                   continue
-              print(f"\n📥 Đang bung Pivot Cache của: {name}")
 
+              print(f"\n📥 Đang xử lý file: {name}")
               file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{SRC_FOLDER}/{name}:/content"
               excel_bytes = requests.get(file_url, headers=headers).content
 
@@ -77,22 +84,29 @@ jobs:
                           continue
 
                       for record_file in record_files:
+                          print(f"🔍 Đang đọc {record_file} ...")
                           xml_data = z.read(record_file)
                           root = etree.fromstring(xml_data)
-                          
-                          # Parse XML pivot cache
-                          ns = {"default": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-                          records = []
-                          for r in root.findall(".//default:r", namespaces=ns):
-                              row = [c.text for c in r.findall(".//default:x", namespaces=ns)]
-                              if row:
-                                  records.append(row)
+                          ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-                          if not records:
+                          rows = []
+                          for r in root.findall(".//d:r", namespaces=ns):
+                              row_values = []
+                              for c in r:
+                                  tag = etree.QName(c).localname
+                                  if tag == "x" or tag == "n":
+                                      row_values.append(c.text)
+                                  elif tag == "m":
+                                      row_values.append(c.text)
+                                  else:
+                                      row_values.append(None)
+                              rows.append(row_values)
+
+                          if not rows:
                               print("⚠️ Không có dữ liệu trong cache.")
                               continue
 
-                          df = pd.DataFrame(records)
+                          df = pd.DataFrame(rows)
                           print(f"✅ Bung được {len(df)} dòng từ cache.")
 
                           base_name = name.replace(".xlsx", "")
@@ -100,20 +114,20 @@ jobs:
                           out_parquet = f"{SRC_FOLDER}/{base_name}_cache.parquet"
 
                           # Ghi Excel
-                          xlsx_buf = io.BytesIO()
-                          df.to_excel(xlsx_buf, index=False)
-                          xlsx_buf.seek(0)
+                          buf_xlsx = io.BytesIO()
+                          df.to_excel(buf_xlsx, index=False)
+                          buf_xlsx.seek(0)
                           requests.put(f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{out_xlsx}:/content",
-                                       headers=headers, data=xlsx_buf)
+                                       headers=headers, data=buf_xlsx)
                           
                           # Ghi Parquet
-                          pq_buf = io.BytesIO()
-                          df.to_parquet(pq_buf, index=False)
-                          pq_buf.seek(0)
+                          buf_parq = io.BytesIO()
+                          df.to_parquet(buf_parq, index=False)
+                          buf_parq.seek(0)
                           requests.put(f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:{out_parquet}:/content",
-                                       headers=headers, data=pq_buf)
+                                       headers=headers, data=buf_parq)
 
-                          print(f"📤 Đã ghi {base_name}_cache.xlsx và .parquet thành công!")
+                          print(f"📤 Đã ghi {base_name}_cache.xlsx và .parquet thành công.")
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
