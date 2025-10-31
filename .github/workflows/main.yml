@@ -1,0 +1,74 @@
+      - name: Run refresh script (all Excel files)
+        env:
+          TENANT_ID: ${{ f61a1b67-2c13-44d9-a935-a7e782e50eaf }}
+          CLIENT_ID: ${{ efbcb517-69ef-48f4-86c2-047ce45e4464 }}
+          CLIENT_SECRET: ${{INZ8Q~bIXgS20FKWdVilGXv5jHzozan3CGTukbA3}}
+          FOLDER_PATH: ${{ /1.Job/2425/1. Tracking/Pivot_Month_Par/
+ }}
+        run: |
+          python - <<'PYCODE'
+          import io, os, requests
+          from openpyxl import load_workbook
+
+          TENANT_ID = os.environ["TENANT_ID"]
+          CLIENT_ID = os.environ["CLIENT_ID"]
+          CLIENT_SECRET = os.environ["CLIENT_SECRET"]
+          FOLDER_PATH = os.environ["FOLDER_PATH"].rstrip("/")
+
+          # 🔐 Lấy access token từ Entra (Azure AD)
+          token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+          token_data = {
+              "grant_type": "client_credentials",
+              "client_id": CLIENT_ID,
+              "client_secret": CLIENT_SECRET,
+              "scope": "https://graph.microsoft.com/.default"
+          }
+          token = requests.post(token_url, data=token_data).json()["access_token"]
+          headers = {"Authorization": f"Bearer {token}"}
+
+          # 📂 Liệt kê tất cả file trong thư mục OneDrive
+          list_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{FOLDER_PATH}:/children"
+          files = requests.get(list_url, headers=headers).json().get("value", [])
+
+          if not files:
+              print("⚠️ Không tìm thấy file nào trong thư mục:", FOLDER_PATH)
+              exit()
+
+          # 🧩 Lặp qua từng file .xlsx
+          for f in files:
+              name = f["name"]
+              if not name.lower().endswith(".xlsx"):
+                  continue
+
+              print(f"\n📥 Đang xử lý file: {name}")
+              file_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{FOLDER_PATH}/{name}:/content"
+
+              try:
+                  # 📥 Tải file
+                  excel_bytes = requests.get(file_url, headers=headers).content
+                  wb = load_workbook(io.BytesIO(excel_bytes), data_only=False)
+
+                  # 🔄 Refresh Pivot Cache
+                  refreshed = False
+                  for sheet in wb.worksheets:
+                      if hasattr(sheet, "_pivots"):
+                          for pivot in sheet._pivots:
+                              pivot.cache.refreshOnLoad = True
+                              refreshed = True
+                  if refreshed:
+                      print(f"✅ Đã bật refreshOnLoad cho: {name}")
+                  else:
+                      print(f"ℹ️ Không tìm thấy PivotTable trong {name}")
+
+                  # 💾 Upload lại file (ghi đè)
+                  buffer = io.BytesIO()
+                  wb.save(buffer)
+                  buffer.seek(0)
+                  requests.put(file_url, headers=headers, data=buffer)
+                  print(f"📤 Đã lưu lại file {name} lên OneDrive.\n")
+
+              except Exception as e:
+                  print(f"❌ Lỗi khi xử lý {name}: {e}")
+
+          print("🏁 Hoàn tất xử lý tất cả các file Excel.")
+          PYCODE
