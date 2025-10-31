@@ -1,10 +1,9 @@
       - name: Run refresh script (all Excel files)
         env:
-          TENANT_ID: ${{ f61a1b67-2c13-44d9-a935-a7e782e50eaf }}
-          CLIENT_ID: ${{ efbcb517-69ef-48f4-86c2-047ce45e4464 }}
+          TENANT_ID: ${{f61a1b67-2c13-44d9-a935-a7e782e50eaf}}
+          CLIENT_ID: ${{efbcb517-69ef-48f4-86c2-047ce45e4464}}
           CLIENT_SECRET: ${{INZ8Q~bIXgS20FKWdVilGXv5jHzozan3CGTukbA3}}
-          FOLDER_PATH: ${{ /1.Job/2425/1. Tracking/Pivot_Month_Par/
- }}
+          FOLDER_PATH: ${{/1.Job/2425/1. Tracking/Pivot_Month_Par/]}
         run: |
           python - <<'PYCODE'
           import io, os, requests
