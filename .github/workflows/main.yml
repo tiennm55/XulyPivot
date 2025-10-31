@@ -2,7 +2,7 @@ name: Refresh Excel Pivot on OneDrive
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # chạy tự động mỗi ngày lúc 9h sáng VN (2h UTC)
+    - cron: "0 2 * * *"  # chạy mỗi ngày lúc 9h sáng VN (2h UTC)
   workflow_dispatch:      # cho phép chạy thủ công
 
 jobs:
@@ -30,12 +30,14 @@ jobs:
           import io, os, requests
           from openpyxl import load_workbook
 
+          # 🔧 Cấu hình môi trường
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
           FOLDER_PATH = os.environ["FOLDER_PATH"].rstrip("/")
+          USER_EMAIL = "tiennm@tuanvietc5.id.vn"  # ⚠️ thay bằng email Entra chính xác của bạn
 
-          # 🔐 Lấy access token từ Entra (Azure AD)
+          # 🔐 Lấy Access Token từ Entra ID
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
           token_data = {
               "grant_type": "client_credentials",
@@ -51,16 +53,19 @@ jobs:
 
           headers = {"Authorization": f"Bearer {token}"}
 
-          # 🧭 Tự động lấy DRIVE_ID của OneDrive Business
-          drives_resp = requests.get("https://graph.microsoft.com/v1.0/me/drives", headers=headers)
+          # 📂 Lấy Drive ID của user (OneDrive for Business)
+          drive_url = f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}/drives"
+          drives_resp = requests.get(drive_url, headers=headers)
           drives_json = drives_resp.json()
+
           if "value" not in drives_json or not drives_json["value"]:
               print("❌ Không thể truy cập danh sách drive:", drives_json)
               exit(1)
+
           DRIVE_ID = drives_json["value"][0]["id"]
           print(f"📂 Drive ID: {DRIVE_ID}")
 
-          # 📂 Liệt kê tất cả file trong thư mục OneDrive
+          # 📁 Lấy danh sách file trong thư mục Onedrive
           list_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:{FOLDER_PATH}:/children"
           files_resp = requests.get(list_url, headers=headers)
           files_json = files_resp.json()
@@ -70,7 +75,7 @@ jobs:
               print("📄 Response:", files_json)
               exit()
 
-          # 🧩 Lặp qua từng file .xlsx
+          # 🧩 Xử lý từng file .xlsx
           for f in files_json["value"]:
               name = f["name"]
               if not name.lower().endswith(".xlsx"):
@@ -80,7 +85,7 @@ jobs:
               file_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/root:{FOLDER_PATH}/{name}:/content"
 
               try:
-                  # 📥 Tải file
+                  # 📥 Tải file Excel
                   excel_bytes = requests.get(file_url, headers=headers).content
                   wb = load_workbook(io.BytesIO(excel_bytes), data_only=False)
 
@@ -91,12 +96,13 @@ jobs:
                           for pivot in sheet._pivots:
                               pivot.cache.refreshOnLoad = True
                               refreshed = True
+
                   if refreshed:
                       print(f"✅ Đã bật refreshOnLoad cho: {name}")
                   else:
                       print(f"ℹ️ Không tìm thấy PivotTable trong {name}")
 
-                  # 💾 Upload lại file (ghi đè)
+                  # 💾 Upload lại file
                   buffer = io.BytesIO()
                   wb.save(buffer)
                   buffer.seek(0)
