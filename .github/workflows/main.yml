@@ -1,4 +1,4 @@
-name: Extract Pivot Cache Directly via Microsoft Graph API
+name: Smart Pivot Cache Extract (Direct Microsoft Graph API)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Pivot Extract (Direct Graph)
+      - name: Run Smart Pivot Extract
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -36,7 +36,6 @@ jobs:
           SRC_FOLDER = os.environ["SRC_FOLDER"]
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
-          # ===== 🔑 Lấy access token =====
           print("🔐 Đang lấy access token ...")
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
           token_data = {
@@ -51,7 +50,7 @@ jobs:
               exit(1)
           headers = {"Authorization": f"Bearer {token}"}
 
-          # ===== 📂 Lấy Drive ID =====
+          # ===== Lấy Drive ID =====
           drive_info = requests.get(f"{GRAPH_API}/users/{USER_EMAIL}/drive", headers=headers).json()
           if "id" not in drive_info:
               print("❌ Không lấy được Drive ID:", drive_info)
@@ -59,7 +58,7 @@ jobs:
           drive_id = drive_info["id"]
           print("📁 Drive ID:", drive_id)
 
-          # ===== 🧭 Lấy danh sách file trong thư mục nguồn =====
+          # ===== Lấy danh sách file trong thư mục =====
           encoded_path = requests.utils.quote(SRC_FOLDER)
           list_url = f"{GRAPH_API}/drives/{drive_id}/root:{encoded_path}:/children"
           res = requests.get(list_url, headers=headers)
@@ -77,38 +76,57 @@ jobs:
 
               dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{f['id']}/content"
               resp = requests.get(dl_url, headers=headers)
+              if resp.status_code != 200:
+                  print(f"❌ Lỗi tải file {name}: {resp.status_code}")
+                  continue
               excel_bytes = resp.content
 
               if excel_bytes[:4] != b'PK\x03\x04':
-                  print(f"⚠️ {name} không phải Excel hợp lệ. (20 byte đầu: {excel_bytes[:20]})")
+                  print(f"⚠️ {name} không phải Excel hợp lệ.")
                   continue
 
               try:
                   with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
-                      records = [p for p in z.namelist() if "pivotCacheRecords" in p]
-                      if not records:
-                          print("⚠️ Không có PivotCacheRecords.")
+                      record_files = [p for p in z.namelist() if "pivotCacheRecords" in p]
+                      if not record_files:
+                          print("⚠️ Không có pivotCacheRecords trong file.")
                           continue
 
-                      for rec in records:
+                      for rec in record_files:
                           print(f"🔍 Bung {rec} ...")
                           xml_data = z.read(rec)
                           root = etree.fromstring(xml_data)
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
+                          # Lấy tên cột từ pivotCacheDefinition
+                          col_names = []
+                          def_path = rec.replace("Records", "Definition")
+                          if def_path in z.namelist():
+                              def_xml = etree.fromstring(z.read(def_path))
+                              fields = def_xml.findall(".//d:cacheField", ns)
+                              col_names = [f.get("name") or f.get("caption") or f"Field{i}" for i, f in enumerate(fields)]
+
                           rows = []
                           for r in root.findall(".//d:r", ns):
-                              values = [x.text for x in r.findall(".//d:x", ns)]
-                              if values:
-                                  rows.append(values)
+                              row_values = []
+                              for c in r:
+                                  tag = etree.QName(c).localname
+                                  val = None
+                                  if tag in ("n", "v", "s", "x"):  # numeric, string, index
+                                      val = c.text
+                                  elif tag == "b":  # boolean
+                                      val = "TRUE" if c.text == "1" else "FALSE"
+                                  row_values.append(val)
+                              rows.append(row_values)
+
                           if not rows:
                               print("⚠️ Cache rỗng.")
                               continue
 
-                          df = pd.DataFrame(rows)
+                          df = pd.DataFrame(rows, columns=col_names if col_names else None)
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ===== 💾 Ghi Parquet trở lại OneDrive =====
+                          # ===== Ghi file Parquet =====
                           out_name = name.replace(".xlsx", "_cache.parquet")
                           buf = io.BytesIO()
                           df.to_parquet(buf, index=False)
