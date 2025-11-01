@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Full Decode + Export XLSX to Pivot_To_Month)
+name: Smart Pivot Cache Extract (Full Decode + Export XLSX & Parquet)
 
 on:
   workflow_dispatch:
@@ -17,14 +17,15 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Full Smart Pivot Extract + Export XLSX
+      - name: Run Full Smart Pivot Extract + Export XLSX + Parquet
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
-          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
-          OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
+          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_IDS"
+          OUT_XLSX_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
+          OUT_PARQUET_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
         run: |
           python - <<'PYCODE'
           import os, io, zipfile, requests, pandas as pd
@@ -35,7 +36,8 @@ jobs:
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
           USER_EMAIL = os.environ["USER_EMAIL"]
           SRC_FOLDER = os.environ["SRC_FOLDER"]
-          OUT_FOLDER = os.environ["OUT_FOLDER"]
+          OUT_XLSX_FOLDER = os.environ["OUT_XLSX_FOLDER"]
+          OUT_PARQUET_FOLDER = os.environ["OUT_PARQUET_FOLDER"]
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
           print("🔐 Lấy access token ...")
@@ -172,20 +174,20 @@ jobs:
                           buf_par = io.BytesIO()
                           df.to_parquet(buf_par, index=False)
                           buf_par.seek(0)
-                          upload_parquet_url = f"{GRAPH_API}/drives/{drive_id}/root:{SRC_FOLDER}/{out_parquet}:/content?@microsoft.graph.conflictBehavior=replace"
+                          upload_parquet_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_PARQUET_FOLDER}/{out_parquet}:/content?@microsoft.graph.conflictBehavior=replace"
                           up = requests.put(upload_parquet_url, headers=headers, data=buf_par)
                           if up.ok:
-                              print(f"📤 Đã ghi {out_parquet} thành công (overwrite).")
+                              print(f"📤 Đã ghi {out_parquet} vào Pivot_Month_Par (overwrite).")
                           else:
                               print(f"❌ Lỗi ghi {out_parquet}:", up.text)
 
-                          # ===== Ghi file XLSX vào Pivot_To_Month =====
+                          # ===== Ghi file XLSX =====
                           out_xlsx = name.replace(".xlsx", "_cache.xlsx")
                           buf_xlsx = io.BytesIO()
                           with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as writer:
                               df.to_excel(writer, index=False, sheet_name="Detail")
                           buf_xlsx.seek(0)
-                          upload_xlsx_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_FOLDER}/{out_xlsx}:/content?@microsoft.graph.conflictBehavior=replace"
+                          upload_xlsx_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_XLSX_FOLDER}/{out_xlsx}:/content?@microsoft.graph.conflictBehavior=replace"
                           upx = requests.put(upload_xlsx_url, headers=headers, data=buf_xlsx)
                           if upx.ok:
                               print(f"📗 Đã ghi {out_xlsx} vào Pivot_To_Month (sheet Detail).")
@@ -195,5 +197,5 @@ jobs:
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("\n🏁 Hoàn tất bung Pivot Cache và ghi XLSX vào Pivot_To_Month.")
+          print("\n🏁 Hoàn tất bung Pivot Cache và ghi file vào Pivot_Month_Par + Pivot_To_Month.")
           PYCODE
