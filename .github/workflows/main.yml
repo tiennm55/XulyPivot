@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Full Decode + Export XLSX & Parquet)
+name: Smart Pivot Cache Extract (Full Decode + Export XLSX & Parquet + Cleanup)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Full Smart Pivot Extract + Export XLSX + Parquet
+      - name: Run Full Smart Pivot Extract + Export XLSX + Parquet + Cleanup
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -75,11 +75,14 @@ jobs:
           xlsx_files = [i for i in items if i["name"].lower().endswith(".xlsx")]
           print(f"🔎 Tìm thấy {len(xlsx_files)} file trong {SRC_FOLDER}")
 
+          processed_files = []  # 🔹 Lưu danh sách file xử lý thành công
+
           for f in xlsx_files:
               name = f["name"]
+              file_id = f["id"]
               print(f"\n📥 Đang xử lý: {name}")
 
-              dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{f['id']}/content"
+              dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{file_id}/content"
               resp = requests.get(dl_url, headers=headers)
               if resp.status_code != 200:
                   print(f"❌ Lỗi tải file {name}: {resp.status_code}")
@@ -180,6 +183,7 @@ jobs:
                               print(f"📤 Đã ghi {out_parquet} vào Pivot_Month_Par (overwrite).")
                           else:
                               print(f"❌ Lỗi ghi {out_parquet}:", up.text)
+                              continue
 
                           # ===== Ghi file XLSX =====
                           out_xlsx = name.replace(".xlsx", "_cache.xlsx")
@@ -191,11 +195,28 @@ jobs:
                           upx = requests.put(upload_xlsx_url, headers=headers, data=buf_xlsx)
                           if upx.ok:
                               print(f"📗 Đã ghi {out_xlsx} vào Pivot_To_Month (sheet Detail).")
+                              processed_files.append({"id": file_id, "name": name})
                           else:
                               print(f"❌ Lỗi ghi {out_xlsx}:", upx.text)
 
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          print("\n🏁 Hoàn tất bung Pivot Cache và ghi file vào Pivot_Month_Par + Pivot_To_Month.")
+          # ===== 🧹 Dọn dẹp file đã xử lý thành công =====
+          if processed_files:
+              print("\n🧹 Đang xóa các file đã xử lý thành công trong Pivot_IDS ...")
+              for f in processed_files:
+                  try:
+                      del_url = f"{GRAPH_API}/drives/{drive_id}/items/{f['id']}"
+                      del_res = requests.delete(del_url, headers=headers)
+                      if del_res.status_code in (200, 204):
+                          print(f"🗑️ Đã xóa: {f['name']}")
+                      else:
+                          print(f"⚠️ Lỗi khi xóa {f['name']}: {del_res.status_code} - {del_res.text}")
+                  except Exception as e:
+                      print(f"❌ Lỗi khi cố xóa {f['name']}: {e}")
+          else:
+              print("\n📁 Không có file nào được xử lý để xóa.")
+
+          print("\n✅ Hoàn tất! Đã bung cache, ghi ra thư mục đích và dọn dẹp Pivot_IDS.")
           PYCODE
