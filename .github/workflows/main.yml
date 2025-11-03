@@ -1,222 +1,126 @@
-name: Smart Pivot Cache Extract (Full Decode + Export XLSX & Parquet + Cleanup)
+for idx, f in enumerate(xlsx_files, start=1):
+    name = f["name"]
+    file_id = f["id"]
+    print(f"\n📥 Đang xử lý: {name}")
 
-on:
-  workflow_dispatch:
+    dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{file_id}/content"
+    resp = requests.get(dl_url, headers=headers)
+    if resp.status_code != 200:
+        print(f"❌ Lỗi tải file {name}: {resp.status_code}")
+        continue
+    excel_bytes = resp.content
 
-jobs:
-  extract:
-    runs-on: ubuntu-latest
+    if excel_bytes[:4] != b'PK\x03\x04':
+        print(f"⚠️ {name} không phải Excel hợp lệ.")
+        continue
 
-    steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.11
+    try:
+        with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
+            record_files = [p for p in z.namelist() if "pivotCacheRecords" in p]
+            if not record_files:
+                print("⚠️ Không có pivotCacheRecords trong file.")
+                continue
 
-      - name: Install dependencies
-        run: |
-          pip install pandas pyarrow openpyxl lxml requests
+            for rec in record_files:
+                print(f"🔍 Bung {rec} ...")
 
-      - name: Run Full Smart Pivot Extract + Export XLSX + Parquet + Cleanup
-        env:
-          TENANT_ID: ${{ secrets.TENANT_ID }}
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          USER_EMAIL: "tiennm@tuanvietc5.id.vn"
-          SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_IDS"
-          OUT_XLSX_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
-          OUT_PARQUET_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
-        run: |
-          python - <<'PYCODE'
-          import os, io, zipfile, requests, pandas as pd
-          from lxml import etree
+                def_path = rec.replace("Records", "Definition")
+                if def_path not in z.namelist():
+                    print("⚠️ Không tìm thấy Definition tương ứng.")
+                    continue
 
-          TENANT_ID = os.environ["TENANT_ID"]
-          CLIENT_ID = os.environ["CLIENT_ID"]
-          CLIENT_SECRET = os.environ["CLIENT_SECRET"]
-          USER_EMAIL = os.environ["USER_EMAIL"]
-          SRC_FOLDER = os.environ["SRC_FOLDER"]
-          OUT_XLSX_FOLDER = os.environ["OUT_XLSX_FOLDER"]
-          OUT_PARQUET_FOLDER = os.environ["OUT_PARQUET_FOLDER"]
-          GRAPH_API = "https://graph.microsoft.com/v1.0"
+                def_xml = etree.fromstring(z.read(def_path))
+                ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-          print("🔐 Lấy access token ...")
-          token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-          token_data = {
-              "grant_type": "client_credentials",
-              "client_id": CLIENT_ID,
-              "client_secret": CLIENT_SECRET,
-              "scope": "https://graph.microsoft.com/.default",
-          }
-          token_res = requests.post(token_url, data=token_data)
-          if not token_res.ok:
-              print("❌ Không lấy được token:", token_res.text)
-              exit(1)
-          token = token_res.json().get("access_token")
-          headers = {"Authorization": f"Bearer {token}"}
+                # ===== Lấy sharedItems + tên cột =====
+                fields = []
+                shared_lookup = []
+                for fnode in def_xml.findall(".//d:cacheField", ns):
+                    name_field = fnode.get("name") or fnode.get("caption") or "Field"
+                    shared = []
+                    si = fnode.find(".//d:sharedItems", ns)
+                    if si is not None:
+                        for item in si:
+                            tag = etree.QName(item).localname
+                            val = None
+                            if tag == "s":
+                                val = item.get("v") or item.text
+                            elif tag == "n":
+                                try:
+                                    val = float(item.get("v") or item.text or 0)
+                                except:
+                                    val = item.get("v") or item.text
+                            elif tag == "b":
+                                val = "TRUE" if item.get("v") == "1" else "FALSE"
+                            shared.append(val)
+                    shared_lookup.append(shared)
+                    fields.append(name_field)
 
-          # ===== Lấy Drive ID =====
-          drive_info = requests.get(f"{GRAPH_API}/users/{USER_EMAIL}/drive", headers=headers).json()
-          if "id" not in drive_info:
-              print("❌ Không lấy được Drive ID:", drive_info)
-              exit(1)
-          drive_id = drive_info["id"]
-          print("📁 Drive ID:", drive_id)
+                # ===== Đọc pivotCacheRecords =====
+                root = etree.fromstring(z.read(rec))
+                rows = []
+                for row in root.findall(".//d:r", ns):
+                    row_values = []
+                    for i, cell in enumerate(row):
+                        tag = etree.QName(cell).localname
+                        v_attr = cell.get("v")
+                        val = None
+                        if tag == "x" and v_attr is not None:
+                            try:
+                                idx_val = int(v_attr)
+                                if i < len(shared_lookup) and idx_val < len(shared_lookup[i]):
+                                    val = shared_lookup[i][idx_val]
+                                else:
+                                    val = idx_val
+                            except:
+                                val = v_attr
+                        elif tag == "s":
+                            val = v_attr or cell.text
+                        elif tag == "n":
+                            try:
+                                val = float(v_attr or cell.text or 0)
+                            except:
+                                val = v_attr
+                        elif tag == "b":
+                            val = "TRUE" if (v_attr == "1" or cell.text == "1") else "FALSE"
+                        row_values.append(val)
+                    rows.append(row_values)
 
-          # ===== Lấy danh sách file trong thư mục nguồn =====
-          encoded_path = requests.utils.quote(SRC_FOLDER)
-          list_url = f"{GRAPH_API}/drives/{drive_id}/root:{encoded_path}:/children"
-          res = requests.get(list_url, headers=headers)
-          if not res.ok:
-              print("❌ Lỗi lấy danh sách:", res.text)
-              exit(1)
+                if not rows:
+                    print("⚠️ Cache rỗng.")
+                    continue
 
-          items = res.json().get("value", [])
-          xlsx_files = [i for i in items if i["name"].lower().endswith(".xlsx")]
-          print(f"🔎 Tìm thấy {len(xlsx_files)} file trong {SRC_FOLDER}")
+                df = pd.DataFrame(rows, columns=fields)
+                print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-          processed_files = []  # 🔹 Lưu danh sách file xử lý thành công
+                # ===== Quy tắc đặt tên mới =====
+                file_index = str(idx).zfill(2)  # 01, 02, 03,...
+                out_xlsx = f"Detail_{file_index}.xlsx"
+                out_parquet = f"Detail_{file_index}.parquet"
 
-          for f in xlsx_files:
-              name = f["name"]
-              file_id = f["id"]
-              print(f"\n📥 Đang xử lý: {name}")
+                # ===== Ghi file Parquet =====
+                buf_par = io.BytesIO()
+                df.to_parquet(buf_par, index=False)
+                buf_par.seek(0)
+                upload_parquet_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_PARQUET_FOLDER}/{out_parquet}:/content?@microsoft.graph.conflictBehavior=replace"
+                up = requests.put(upload_parquet_url, headers=headers, data=buf_par)
+                if up.ok:
+                    print(f"📤 Đã ghi {out_parquet} vào Pivot_Month_Par.")
+                else:
+                    print(f"❌ Lỗi ghi {out_parquet}:", up.text)
+                    continue
 
-              dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{file_id}/content"
-              resp = requests.get(dl_url, headers=headers)
-              if resp.status_code != 200:
-                  print(f"❌ Lỗi tải file {name}: {resp.status_code}")
-                  continue
-              excel_bytes = resp.content
-
-              if excel_bytes[:4] != b'PK\x03\x04':
-                  print(f"⚠️ {name} không phải Excel hợp lệ.")
-                  continue
-
-              try:
-                  with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
-                      record_files = [p for p in z.namelist() if "pivotCacheRecords" in p]
-                      if not record_files:
-                          print("⚠️ Không có pivotCacheRecords trong file.")
-                          continue
-
-                      for rec in record_files:
-                          print(f"🔍 Bung {rec} ...")
-
-                          def_path = rec.replace("Records", "Definition")
-                          if def_path not in z.namelist():
-                              print("⚠️ Không tìm thấy Definition tương ứng.")
-                              continue
-
-                          def_xml = etree.fromstring(z.read(def_path))
-                          ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-
-                          # ===== Lấy sharedItems + tên cột =====
-                          fields = []
-                          shared_lookup = []
-                          for fnode in def_xml.findall(".//d:cacheField", ns):
-                              name_field = fnode.get("name") or fnode.get("caption") or "Field"
-                              shared = []
-                              si = fnode.find(".//d:sharedItems", ns)
-                              if si is not None:
-                                  for item in si:
-                                      tag = etree.QName(item).localname
-                                      val = None
-                                      if tag == "s":
-                                          val = item.get("v") or item.text
-                                      elif tag == "n":
-                                          try:
-                                              val = float(item.get("v") or item.text or 0)
-                                          except:
-                                              val = item.get("v") or item.text
-                                      elif tag == "b":
-                                          val = "TRUE" if item.get("v") == "1" else "FALSE"
-                                      shared.append(val)
-                              shared_lookup.append(shared)
-                              fields.append(name_field)
-
-                          # ===== Đọc pivotCacheRecords =====
-                          root = etree.fromstring(z.read(rec))
-                          rows = []
-                          for row in root.findall(".//d:r", ns):
-                              row_values = []
-                              for i, cell in enumerate(row):
-                                  tag = etree.QName(cell).localname
-                                  v_attr = cell.get("v")
-                                  val = None
-                                  if tag == "x" and v_attr is not None:
-                                      try:
-                                          idx = int(v_attr)
-                                          if i < len(shared_lookup) and idx < len(shared_lookup[i]):
-                                              val = shared_lookup[i][idx]
-                                          else:
-                                              val = idx
-                                      except:
-                                          val = v_attr
-                                  elif tag == "s":
-                                      val = v_attr or cell.text
-                                  elif tag == "n":
-                                      try:
-                                          val = float(v_attr or cell.text or 0)
-                                      except:
-                                          val = v_attr
-                                  elif tag == "b":
-                                      val = "TRUE" if (v_attr == "1" or cell.text == "1") else "FALSE"
-                                  row_values.append(val)
-                              rows.append(row_values)
-
-                          if not rows:
-                              print("⚠️ Cache rỗng.")
-                              continue
-
-                          df = pd.DataFrame(rows, columns=fields)
-                          print(f"✅ Bung được {len(df)} dòng từ {name}")
-
-                          # ===== Ghi file Parquet =====
-                          out_parquet = name.replace(".xlsx", "_cache.parquet")
-                          buf_par = io.BytesIO()
-                          df.to_parquet(buf_par, index=False)
-                          buf_par.seek(0)
-                          upload_parquet_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_PARQUET_FOLDER}/{out_parquet}:/content?@microsoft.graph.conflictBehavior=replace"
-                          up = requests.put(upload_parquet_url, headers=headers, data=buf_par)
-                          if up.ok:
-                              print(f"📤 Đã ghi {out_parquet} vào Pivot_Month_Par (overwrite).")
-                          else:
-                              print(f"❌ Lỗi ghi {out_parquet}:", up.text)
-                              continue
-
-                          # ===== Ghi file XLSX =====
-                          out_xlsx = name.replace(".xlsx", "_cache.xlsx")
-                          buf_xlsx = io.BytesIO()
-                          with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as writer:
-                              df.to_excel(writer, index=False, sheet_name="Detail")
-                          buf_xlsx.seek(0)
-                          upload_xlsx_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_XLSX_FOLDER}/{out_xlsx}:/content?@microsoft.graph.conflictBehavior=replace"
-                          upx = requests.put(upload_xlsx_url, headers=headers, data=buf_xlsx)
-                          if upx.ok:
-                              print(f"📗 Đã ghi {out_xlsx} vào Pivot_To_Month (sheet Detail).")
-                              processed_files.append({"id": file_id, "name": name})
-                          else:
-                              print(f"❌ Lỗi ghi {out_xlsx}:", upx.text)
-
-              except Exception as e:
-                  print(f"❌ Lỗi khi xử lý {name}: {e}")
-
-          # ===== 🧹 Dọn dẹp file đã xử lý thành công =====
-          if processed_files:
-              print("\n🧹 Đang xóa các file đã xử lý thành công trong Pivot_IDS ...")
-              for f in processed_files:
-                  try:
-                      del_url = f"{GRAPH_API}/drives/{drive_id}/items/{f['id']}"
-                      del_res = requests.delete(del_url, headers=headers)
-                      if del_res.status_code in (200, 204):
-                          print(f"🗑️ Đã xóa: {f['name']}")
-                      else:
-                          print(f"⚠️ Lỗi khi xóa {f['name']}: {del_res.status_code} - {del_res.text}")
-                  except Exception as e:
-                      print(f"❌ Lỗi khi cố xóa {f['name']}: {e}")
-          else:
-              print("\n📁 Không có file nào được xử lý để xóa.")
-
-          print("\n✅ Hoàn tất! Đã bung cache, ghi ra thư mục đích và dọn dẹp Pivot_IDS.")
-          PYCODE
+                # ===== Ghi file XLSX =====
+                buf_xlsx = io.BytesIO()
+                with pd.ExcelWriter(buf_xlsx, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Detail")
+                buf_xlsx.seek(0)
+                upload_xlsx_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_XLSX_FOLDER}/{out_xlsx}:/content?@microsoft.graph.conflictBehavior=replace"
+                upx = requests.put(upload_xlsx_url, headers=headers, data=buf_xlsx)
+                if upx.ok:
+                    print(f"📗 Đã ghi {out_xlsx} vào Pivot_To_Month.")
+                    processed_files.append({"id": file_id, "name": name})
+                else:
+                    print(f"❌ Lỗi ghi {out_xlsx}:", upx.text)
+    except Exception as e:
+        print(f"❌ Lỗi khi xử lý {name}: {e}")
