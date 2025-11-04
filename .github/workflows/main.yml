@@ -17,7 +17,7 @@ jobs:
         run: |
           pip install pandas pyarrow openpyxl lxml requests
 
-      - name: Run Full Smart Pivot Extract + Export XLSX + Parquet + Cleanup
+      - name: Run Full Smart Pivot Extract + Export XLSX + Parquet + Cleanup (DATE supported)
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -30,7 +30,9 @@ jobs:
           python - <<'PYCODE'
           import os, io, zipfile, requests, pandas as pd
           from lxml import etree
+          from datetime import datetime, timedelta
 
+          # ===== ENV VARS =====
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
@@ -39,6 +41,8 @@ jobs:
           OUT_XLSX_FOLDER = os.environ["OUT_XLSX_FOLDER"]
           OUT_PARQUET_FOLDER = os.environ["OUT_PARQUET_FOLDER"]
           GRAPH_API = "https://graph.microsoft.com/v1.0"
+
+          excel_epoch = datetime(1899, 12, 30)  # Gốc ngày Excel (Windows)
 
           print("🔐 Lấy access token ...")
           token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -75,7 +79,7 @@ jobs:
           xlsx_files = [i for i in items if i["name"].lower().endswith(".xlsx")]
           print(f"🔎 Tìm thấy {len(xlsx_files)} file trong {SRC_FOLDER}")
 
-          processed_files = []  # 🔹 Lưu danh sách file xử lý thành công
+          processed_files = []
 
           for idx, f in enumerate(xlsx_files, start=1):
               name = f["name"]
@@ -111,7 +115,7 @@ jobs:
                           def_xml = etree.fromstring(z.read(def_path))
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-                          # ===== Lấy sharedItems + tên cột =====
+                          # ===== Đọc sharedItems (có hỗ trợ DATE) =====
                           fields = []
                           shared_lookup = []
                           for fnode in def_xml.findall(".//d:cacheField", ns):
@@ -126,9 +130,19 @@ jobs:
                                           val = item.get("v") or item.text
                                       elif tag == "n":
                                           try:
-                                              val = float(item.get("v") or item.text or 0)
+                                              num = float(item.get("v") or item.text or 0)
+                                              if 20000 < num < 80000:  # Khoảng ngày hợp lý (1900–2100)
+                                                  val = (excel_epoch + timedelta(days=num)).date()
+                                              else:
+                                                  val = num
                                           except:
                                               val = item.get("v") or item.text
+                                      elif tag == "d":
+                                          val = item.get("v") or item.text
+                                          try:
+                                              val = datetime.fromisoformat(val.replace("Z", "+00:00")).date()
+                                          except:
+                                              pass
                                       elif tag == "b":
                                           val = "TRUE" if item.get("v") == "1" else "FALSE"
                                       shared.append(val)
@@ -157,7 +171,11 @@ jobs:
                                       val = v_attr or cell.text
                                   elif tag == "n":
                                       try:
-                                          val = float(v_attr or cell.text or 0)
+                                          num = float(v_attr or cell.text or 0)
+                                          if 20000 < num < 80000:
+                                              val = (excel_epoch + timedelta(days=num)).date()
+                                          else:
+                                              val = num
                                       except:
                                           val = v_attr
                                   elif tag == "b":
@@ -172,7 +190,7 @@ jobs:
                           df = pd.DataFrame(rows, columns=fields)
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ===== 🔄 Quy tắc đặt tên mới (Detail_01, Detail_02, ...) =====
+                          # ===== Đặt tên file xuất (Detail_01, Detail_02, ...) =====
                           file_index = str(idx).zfill(2)
                           out_parquet = f"Detail_{file_index}.parquet"
                           out_xlsx = f"Detail_{file_index}.xlsx"
@@ -205,7 +223,7 @@ jobs:
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          # ===== 🧹 Dọn dẹp file đã xử lý thành công =====
+          # ===== 🧹 Dọn dẹp file đã xử lý =====
           if processed_files:
               print("\n🧹 Đang xóa các file đã xử lý thành công trong Pivot_IDS ...")
               for f in processed_files:
@@ -221,5 +239,5 @@ jobs:
           else:
               print("\n📁 Không có file nào được xử lý để xóa.")
 
-          print("\n✅ Hoàn tất! Đã bung cache, ghi ra thư mục đích và dọn dẹp Pivot_IDS.")
+          print("\n✅ Hoàn tất! Đã bung cache, ghi ra thư mục đích và dọn dẹp Pivot_IDS (DATE supported).")
           PYCODE
