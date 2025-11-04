@@ -131,7 +131,7 @@ jobs:
                                               val = item.get("v") or item.text
                                       elif tag == "b":
                                           val = "TRUE" if item.get("v") == "1" else "FALSE"
-                                      elif tag == "d":  # ✅ xử lý ngày tháng
+                                      elif tag == "d":  # ✅ xử lý ngày tháng, giữ nguyên text
                                           val = item.get("v") or item.text
                                       shared.append(val)
                               shared_lookup.append(shared)
@@ -171,12 +171,8 @@ jobs:
                               print("⚠️ Cache rỗng.")
                               continue
 
+                          # ✅ Giữ nguyên toàn bộ giá trị gốc (không convert)
                           df = pd.DataFrame(rows, columns=fields)
-
-                          # ✅ Chuyển các cột có tên chứa 'date' thành datetime
-                          for col in df.columns:
-                              if "date" in col.lower():
-                                  df[col] = pd.to_datetime(df[col], errors="ignore")
 
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
