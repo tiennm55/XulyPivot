@@ -27,11 +27,10 @@ jobs:
           OUT_XLSX_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
           OUT_PARQUET_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
         run: |
-          python - <<PYCODE
+          python - <<'PYCODE'
           import os, io, zipfile, requests, pandas as pd
           from lxml import etree
 
-          # ===== Lấy biến môi trường =====
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
@@ -39,7 +38,6 @@ jobs:
           SRC_FOLDER = os.environ["SRC_FOLDER"]
           OUT_XLSX_FOLDER = os.environ["OUT_XLSX_FOLDER"]
           OUT_PARQUET_FOLDER = os.environ["OUT_PARQUET_FOLDER"]
-
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
           print("🔐 Lấy access token ...")
@@ -72,24 +70,25 @@ jobs:
           if not res.ok:
               print("❌ Lỗi lấy danh sách:", res.text)
               exit(1)
+
           items = res.json().get("value", [])
           xlsx_files = [i for i in items if i["name"].lower().endswith(".xlsx")]
           print(f"🔎 Tìm thấy {len(xlsx_files)} file trong {SRC_FOLDER}")
 
-          processed_files = []
+          processed_files = []  # 🔹 Lưu danh sách file xử lý thành công
 
-          # ===== Xử lý từng file =====
           for idx, f in enumerate(xlsx_files, start=1):
               name = f["name"]
               file_id = f["id"]
               print(f"\n📥 Đang xử lý: {name}")
+
               dl_url = f"{GRAPH_API}/drives/{drive_id}/items/{file_id}/content"
               resp = requests.get(dl_url, headers=headers)
               if resp.status_code != 200:
                   print(f"❌ Lỗi tải file {name}: {resp.status_code}")
                   continue
-
               excel_bytes = resp.content
+
               if excel_bytes[:4] != b'PK\x03\x04':
                   print(f"⚠️ {name} không phải Excel hợp lệ.")
                   continue
@@ -103,6 +102,7 @@ jobs:
 
                       for rec in record_files:
                           print(f"🔍 Bung {rec} ...")
+
                           def_path = rec.replace("Records", "Definition")
                           if def_path not in z.namelist():
                               print("⚠️ Không tìm thấy Definition tương ứng.")
@@ -111,16 +111,13 @@ jobs:
                           def_xml = etree.fromstring(z.read(def_path))
                           ns = {"d": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
-                          # ===== Đọc sharedItems (có xử lý DATE) =====
+                          # ===== Lấy sharedItems + tên cột =====
                           fields = []
                           shared_lookup = []
-
                           for fnode in def_xml.findall(".//d:cacheField", ns):
                               name_field = fnode.get("name") or fnode.get("caption") or "Field"
-                              si = fnode.find(".//d:sharedItems", ns)
                               shared = []
-                              is_date = si is not None and si.get("containsDate") == "1"  # 🟢 phát hiện kiểu ngày
-
+                              si = fnode.find(".//d:sharedItems", ns)
                               if si is not None:
                                   for item in si:
                                       tag = etree.QName(item).localname
@@ -129,24 +126,20 @@ jobs:
                                           val = item.get("v") or item.text
                                       elif tag == "n":
                                           try:
-                                              num = float(item.get("v") or item.text or 0)
-                                              if is_date and num > 0:
-                                                  val = pd.to_datetime("1899-12-30") + pd.to_timedelta(num, "D")
-                                              else:
-                                                  val = num
+                                              val = float(item.get("v") or item.text or 0)
                                           except:
                                               val = item.get("v") or item.text
                                       elif tag == "b":
                                           val = "TRUE" if item.get("v") == "1" else "FALSE"
+                                      elif tag == "d":  # ✅ xử lý ngày tháng
+                                          val = item.get("v") or item.text
                                       shared.append(val)
-
                               shared_lookup.append(shared)
                               fields.append(name_field)
 
                           # ===== Đọc pivotCacheRecords =====
                           root = etree.fromstring(z.read(rec))
                           rows = []
-
                           for row in root.findall(".//d:r", ns):
                               row_values = []
                               for i, cell in enumerate(row):
@@ -179,9 +172,15 @@ jobs:
                               continue
 
                           df = pd.DataFrame(rows, columns=fields)
+
+                          # ✅ Chuyển các cột có tên chứa 'date' thành datetime
+                          for col in df.columns:
+                              if "date" in col.lower():
+                                  df[col] = pd.to_datetime(df[col], errors="ignore")
+
                           print(f"✅ Bung được {len(df)} dòng từ {name}")
 
-                          # ===== 🔄 Quy tắc đặt tên mới =====
+                          # ===== 🔄 Quy tắc đặt tên mới (Detail_01, Detail_02, ...) =====
                           file_index = str(idx).zfill(2)
                           out_parquet = f"Detail_{file_index}.parquet"
                           out_xlsx = f"Detail_{file_index}.xlsx"
@@ -214,7 +213,7 @@ jobs:
               except Exception as e:
                   print(f"❌ Lỗi khi xử lý {name}: {e}")
 
-          # ===== 🧹 Dọn dẹp file đã xử lý =====
+          # ===== 🧹 Dọn dẹp file đã xử lý thành công =====
           if processed_files:
               print("\n🧹 Đang xóa các file đã xử lý thành công trong Pivot_IDS ...")
               for f in processed_files:
