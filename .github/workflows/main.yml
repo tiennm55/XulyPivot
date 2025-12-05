@@ -24,7 +24,6 @@ jobs:
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
           SRC_FOLDER: "/1.Job/2425/1. Tracking/Pivot_IDS"
-          # Vẫn dùng biến môi trường này làm thư mục đích, nhưng sẽ chứa file CSV
           OUT_CSV_FOLDER: "/1.Job/2425/1. Tracking/Pivot_To_Month"
           OUT_PARQUET_FOLDER: "/1.Job/2425/1. Tracking/Pivot_Month_Par"
         run: |
@@ -37,7 +36,7 @@ jobs:
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
           USER_EMAIL = os.environ["USER_EMAIL"]
           SRC_FOLDER = os.environ["SRC_FOLDER"]
-          OUT_CSV_FOLDER = os.environ["OUT_CSV_FOLDER"] # Đổi tên biến nội bộ cho dễ hiểu
+          OUT_CSV_FOLDER = os.environ["OUT_CSV_FOLDER"]
           OUT_PARQUET_FOLDER = os.environ["OUT_PARQUET_FOLDER"]
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
@@ -76,7 +75,7 @@ jobs:
           xlsx_files = [i for i in items if i["name"].lower().endswith(".xlsx")]
           print(f"🔎 Tìm thấy {len(xlsx_files)} file trong {SRC_FOLDER}")
 
-          processed_files = []  # 🔹 Lưu danh sách file xử lý thành công
+          processed_files = [] 
 
           for idx, f in enumerate(xlsx_files, start=1):
               name = f["name"]
@@ -132,8 +131,29 @@ jobs:
                                               val = item.get("v") or item.text
                                       elif tag == "b":
                                           val = "TRUE" if item.get("v") == "1" else "FALSE"
+                                      
+                                      # --- XỬ LÝ DATE (dd/mm/yyyy) ---
                                       elif tag == "d":
-                                          val = item.get("v") or item.text
+                                          raw_val = item.get("v") or item.text
+                                          # Dữ liệu gốc thường là: 2025-12-05T00:00:00
+                                          try:
+                                              if raw_val:
+                                                  dt_part = raw_val.split("T")[0] # Lấy phần YYYY-MM-DD
+                                                  if "-" in dt_part:
+                                                      parts = dt_part.split("-")
+                                                      if len(parts) == 3:
+                                                          # Xếp lại thành dd/mm/yyyy
+                                                          val = f"{parts[2]}/{parts[1]}/{parts[0]}"
+                                                      else:
+                                                          val = raw_val
+                                                  else:
+                                                      val = raw_val
+                                              else:
+                                                  val = None
+                                          except:
+                                              val = raw_val
+                                      # ------------------------------------
+
                                       shared.append(val)
                               shared_lookup.append(shared)
                               fields.append(name_field)
@@ -165,6 +185,26 @@ jobs:
                                           val = v_attr
                                   elif tag == "b":
                                       val = "TRUE" if (v_attr == "1" or cell.text == "1") else "FALSE"
+                                  
+                                  # Xử lý trường hợp inline date (ít gặp nhưng vẫn cần)
+                                  elif tag == "d":
+                                      raw_val = v_attr or cell.text
+                                      try:
+                                          if raw_val:
+                                               dt_part = raw_val.split("T")[0]
+                                               if "-" in dt_part:
+                                                   parts = dt_part.split("-")
+                                                   if len(parts) == 3:
+                                                       val = f"{parts[2]}/{parts[1]}/{parts[0]}"
+                                                   else:
+                                                       val = raw_val
+                                               else:
+                                                   val = raw_val
+                                          else:
+                                              val = None
+                                      except:
+                                          val = raw_val
+
                                   row_values.append(val)
                               rows.append(row_values)
 
@@ -179,10 +219,11 @@ jobs:
                           # ===== Đặt tên file đầu ra =====
                           file_index = str(idx).zfill(2)
                           out_parquet = f"Detail_{file_index}.parquet"
-                          out_csv = f"Detail_{file_index}.csv"  # 🔹 Đổi đuôi thành CSV
+                          out_csv = f"Detail_{file_index}.csv" 
 
                           # ===== Ghi file Parquet =====
                           buf_par = io.BytesIO()
+                          # Parquet sẽ lưu cột Date dưới dạng String (dd/mm/yyyy)
                           df.to_parquet(buf_par, index=False)
                           buf_par.seek(0)
                           upload_parquet_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_PARQUET_FOLDER}/{out_parquet}:/content?@microsoft.graph.conflictBehavior=replace"
@@ -193,9 +234,8 @@ jobs:
                               print(f"❌ Lỗi ghi {out_parquet}:", up.text)
                               continue
 
-                          # ===== Ghi file CSV (Thay thế đoạn XLSX cũ) =====
-                          # 1. Chuyển DataFrame thành String CSV
-                          # 2. Encode sang bytes với utf-8-sig để đọc được tiếng Việt
+                          # ===== Ghi file CSV =====
+                          # utf-8-sig để Excel đọc được tiếng Việt và Format ngày tháng
                           csv_string = df.to_csv(index=False, encoding='utf-8-sig')
                           csv_bytes = csv_string.encode('utf-8-sig')
 
