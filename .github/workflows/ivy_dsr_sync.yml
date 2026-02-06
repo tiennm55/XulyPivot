@@ -2,8 +2,8 @@ name: IvyCPG DSR Today Sync (All-in-One)
 
 on:
   schedule:
-    - cron: '30 1 * * *' # Chạy lúc 8:30 sáng VN hàng ngày
-  workflow_dispatch: # Nút bấm chạy thủ công
+    - cron: '30 1 * * *' # 8:30 sáng VN hàng ngày
+  workflow_dispatch:
 
 jobs:
   sync_dsr:
@@ -26,7 +26,6 @@ jobs:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
-          # Thư mục lưu trữ trên OneDrive Business của bạn
           OUT_FOLDER: "/1.Job/2425/1. Tracking/Pivot_IDS" 
         run: |
           python - <<'PYCODE'
@@ -34,7 +33,6 @@ jobs:
           from datetime import datetime
           from playwright.sync_api import sync_playwright
 
-          # 1. Cấu hình biến môi trường
           TENANT_ID = os.environ["TENANT_ID"]
           CLIENT_ID = os.environ["CLIENT_ID"]
           CLIENT_SECRET = os.environ["CLIENT_SECRET"]
@@ -55,17 +53,14 @@ jobs:
 
           def run_automation():
               with sync_playwright() as p:
-                  # Chạy ngầm trên GitHub
                   browser = p.chromium.launch(headless=True)
                   page = browser.new_page()
                   
-                  # Chỉnh ngày: 0 là hôm nay, -1 là hôm qua
                   target_dt = datetime.now()
                   day_to_select = str(target_dt.day)
 
                   print(f"🚀 Bắt đầu lấy dữ liệu ngày {day_to_select} ...")
                   
-                  # Đăng nhập
                   page.goto("https://png-vn.ivycpg.com/web/")
                   page.get_by_role("textbox", name="Username *").fill("2001584413.admin")
                   page.get_by_role("textbox", name="Password *").fill("TVIET@2025#$")
@@ -74,11 +69,9 @@ jobs:
                   page.wait_for_load_state("networkidle")
                   time.sleep(5)
 
-                  # Menu Reports > DSR Today
                   page.get_by_role("link", name=" Reports ").click()
                   page.get_by_role("link", name=" DSR Today", exact=True).click()
 
-                  # Thao tác iFrame
                   iframe_main = page.frame_locator("#iContent")
                   iframe_main.get_by_role("textbox").first.click()
                   iframe_main.get_by_role("list").get_by_text("CN PHU YEN").click()
@@ -87,7 +80,6 @@ jobs:
                   iframe_main.get_by_role("link", name=day_to_select, exact=True).click()
                   iframe_main.get_by_text("DSR Today").click()
 
-                  # Xuất Excel
                   iframe_report = iframe_main.frame_locator("#myReportIFrame")
                   export_btn = iframe_report.get_by_role("link", name="Export drop down menu Export")
                   export_btn.wait_for(state="visible", timeout=120000)
@@ -101,30 +93,30 @@ jobs:
                       
                   download = download_info.value
                   file_name = f"DSR_PhuYen_{target_dt.strftime('%d%m%Y')}.xlsx"
-                  # Tải file vào bộ nhớ đệm
-                  file_content = download.create_read_stream().read()
+                  
+                  # SỬA LỖI TẠI ĐÂY: Dùng download.path() thay vì create_read_stream()
+                  temp_path = download.path()
+                  with open(temp_path, "rb") as f:
+                      file_content = f.read()
                   
                   browser.close()
                   return file_name, file_content
 
-          # --- Thực thi ---
           try:
               fname, fcontent = run_automation()
-              print(f"📥 Tải thành công: {fname}")
+              print(f"📥 Đã lấy file từ trình duyệt: {fname}")
 
               token = get_access_token()
               headers = {"Authorization": f"Bearer {token}"}
 
-              # Lấy Drive ID
               drive_res = requests.get(f"{GRAPH_API}/users/{USER_EMAIL}/drive", headers=headers).json()
               drive_id = drive_res["id"]
 
-              # Upload lên OneDrive
               upload_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_FOLDER}/{fname}:/content?@microsoft.graph.conflictBehavior=replace"
               up_res = requests.put(upload_url, headers=headers, data=fcontent)
 
               if up_res.ok:
-                  print(f"✅ Đã đẩy file lên OneDrive: {OUT_FOLDER}/{fname}")
+                  print(f"✅ Upload thành công: {OUT_FOLDER}/{fname}")
               else:
                   print(f"❌ Lỗi upload OneDrive: {up_res.text}")
 
