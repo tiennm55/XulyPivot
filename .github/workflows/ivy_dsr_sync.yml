@@ -26,14 +26,15 @@ jobs:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           USER_EMAIL: "tiennm@tuanvietc5.id.vn"
-          # Cấu hình Chi nhánh và Thư mục tại đây
+          # === CẤU HÌNH TẠI ĐÂY ===
           BRANCH_NAME: "CN PHU YEN"
           BRANCH_CODE: "PHYEN"
-          OUT_FOLDER: "/1.Job/2425/1. Tracking/Daily Sell Report/Data" 
+          OUT_FOLDER: "/1.Job/2425/1. Tracking/Daily Sell Report/Data"
+          DAYS_OFFSET: "0" # 0: Hôm nay, -1: Hôm qua, -2: Kia...
         run: |
           python - <<'PYCODE'
           import os, time, requests, io
-          from datetime import datetime
+          from datetime import datetime, timedelta
           from playwright.sync_api import sync_playwright
 
           TENANT_ID = os.environ["TENANT_ID"]
@@ -43,6 +44,7 @@ jobs:
           OUT_FOLDER = os.environ["OUT_FOLDER"]
           BRANCH_NAME = os.environ["BRANCH_NAME"]
           BRANCH_CODE = os.environ["BRANCH_CODE"]
+          DAYS_OFFSET = int(os.environ.get("DAYS_OFFSET", 0))
           GRAPH_API = "https://graph.microsoft.com/v1.0"
 
           def get_access_token():
@@ -61,10 +63,11 @@ jobs:
                   browser = p.chromium.launch(headless=True)
                   page = browser.new_page()
                   
-                  now = datetime.now()
-                  day_to_select = str(now.day)
+                  # TÍNH TOÁN NGÀY DỰA TRÊN OFFSET
+                  target_date = datetime.now() + timedelta(days=DAYS_OFFSET)
+                  day_to_select = str(target_date.day)
 
-                  print(f"🚀 Bắt đầu lấy dữ liệu cho {BRANCH_NAME} ngày {day_to_select} ...")
+                  print(f"🚀 Mục tiêu: {BRANCH_NAME} | Ngày chọn trên lịch: {day_to_select}")
                   
                   page.goto("https://png-vn.ivycpg.com/web/")
                   page.get_by_role("textbox", name="Username *").fill("2001584413.admin")
@@ -78,12 +81,11 @@ jobs:
                   page.get_by_role("link", name=" DSR Today", exact=True).click()
 
                   iframe_main = page.frame_locator("#iContent")
-                  
-                  # Chọn Branch dựa trên biến BRANCH_NAME
                   iframe_main.get_by_role("textbox").first.click()
                   iframe_main.get_by_role("list").get_by_text(BRANCH_NAME).click()
                   
                   iframe_main.get_by_role("textbox", name="Date").click()
+                  # Chọn đúng ngày đã tính toán
                   iframe_main.get_by_role("link", name=day_to_select, exact=True).click()
                   iframe_main.get_by_text("DSR Today").click()
 
@@ -100,8 +102,9 @@ jobs:
                       
                   download = download_info.value
                   
-                  # Định dạng tên file: BRANCHCODE_ddmmyy_HHMM
-                  file_name = f"{BRANCH_CODE}_{now.strftime('%d%m%y_%H%M')}.xlsx"
+                  # Tên file vẫn lấy theo thời gian thực chạy code để tránh trùng nếu chạy nhiều lần
+                  now_run = datetime.now()
+                  file_name = f"{BRANCH_CODE}_{now_run.strftime('%d%m%y_%H%M')}.xlsx"
                   
                   temp_path = download.path()
                   with open(temp_path, "rb") as f:
@@ -112,8 +115,6 @@ jobs:
 
           try:
               fname, fcontent = run_automation()
-              print(f"📥 Đã tải file: {fname}")
-
               token = get_access_token()
               headers = {"Authorization": f"Bearer {token}"}
 
@@ -124,7 +125,7 @@ jobs:
               up_res = requests.put(upload_url, headers=headers, data=fcontent)
 
               if up_res.ok:
-                  print(f"✅ Đã lưu vào OneDrive: {OUT_FOLDER}/{fname}")
+                  print(f"✅ Thành công: {fname} -> OneDrive")
               else:
                   print(f"❌ Lỗi upload: {up_res.text}")
 
