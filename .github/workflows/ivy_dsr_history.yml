@@ -1,10 +1,10 @@
-name: IvyCPG DSR Historical Sync (Cross-Month Support)
+name: IvyCPG DSR Historical Sync (Robust Version)
 
 on:
   workflow_dispatch:
     inputs:
       days_back:
-        description: 'Số ngày muốn lùi về (ví dụ -45)'
+        description: 'Số ngày muốn lùi về (ví dụ -30)'
         required: true
         default: '-30'
 
@@ -22,7 +22,7 @@ jobs:
           pip install playwright requests
           playwright install chromium
 
-      - name: Run Historical Scraper (Cross-Month)
+      - name: Run Historical Scraper (With Auto-Restart)
         env:
           TENANT_ID: ${{ secrets.TENANT_ID }}
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -63,93 +63,89 @@ jobs:
               return requests.post(url, data=data).json().get("access_token")
 
           def select_date_smart(iframe, target_dt):
-              # Mở lịch
               iframe.get_by_role("textbox", name="Date").click()
               time.sleep(1)
-              
               current_now = get_vn_now()
-              # Tính số tháng lệch giữa tháng hiện tại và tháng mục tiêu
-              # Ví dụ: T2/2026 lùi về T1/2026 là lệch 1 tháng
               diff_month = (current_now.year - target_dt.year) * 12 + (current_now.month - target_dt.month)
-              
               if diff_month > 0:
-                  print(f"      ⏪ Đang lùi {diff_month} tháng trên lịch...")
                   for _ in range(diff_month):
-                      # Click vào class bạn đã soi được
                       iframe.locator(".ui-icon-circle-triangle-w").click()
                       time.sleep(0.5)
-              
-              # Sau khi đã ở đúng tháng, chọn ngày
               iframe.get_by_role("link", name=str(target_dt.day), exact=True).click()
 
           def download_report(page, branch, target_dt):
               print(f"   [{get_vn_now().strftime('%H:%M:%S')}] 🌀 {branch['code']} | {target_dt.strftime('%d/%m/%Y')}")
-              
               page.get_by_role("link", name=" DSR Today", exact=True).click()
               time.sleep(2)
               iframe_main = page.frame_locator("#iContent")
-              
-              # Chọn Branch
               iframe_main.get_by_role("textbox").first.click()
               iframe_main.get_by_role("list").get_by_text(branch['name'], exact=True).click()
-              
-              # Chọn Ngày (Sử dụng hàm thông minh mới)
               select_date_smart(iframe_main, target_dt)
-              
               iframe_main.get_by_text("DSR Today").click()
               
               iframe_report = iframe_main.frame_locator("#myReportIFrame")
               export_btn = iframe_report.get_by_role("link", name="Export drop down menu Export")
               export_btn.wait_for(state="visible", timeout=120000)
-
               export_btn.click()
+
               with page.expect_download(timeout=60000) as download_info:
                   with page.expect_popup() as page1_info:
                       iframe_report.get_by_role("link", name="Excel").click()
                   page1 = page1_info.value
                   page1.close()
-                  
+              
               download = download_info.value
               file_name = f"{branch['code']}_{target_dt.strftime('%d%m%y')}_Hist.xlsx"
-              return file_name, download.path()
+              path = download.path()
+              with open(path, "rb") as f:
+                  data = f.read()
+              # Xóa file tạm ngay để giải phóng Disk
+              if os.path.exists(path): os.remove(path)
+              return file_name, data
 
+          # --- CHƯƠNG TRÌNH CHÍNH VỚI CƠ CHẾ RESTART ---
           try:
               token = get_access_token()
               headers = {"Authorization": f"Bearer {token}"}
               drive_res = requests.get(f"{GRAPH_API}/users/{USER_EMAIL}/drive", headers=headers).json()
               drive_id = drive_res["id"]
 
-              with sync_playwright() as p:
-                  browser = p.chromium.launch(headless=True)
-                  page = browser.new_page()
-                  page.goto("https://png-vn.ivycpg.com/web/")
-                  page.get_by_role("textbox", name="Username *").fill("2001584413.admin")
-                  page.get_by_role("textbox", name="Password *").fill("TVIET@2025#$")
-                  page.get_by_role("button", name="Login").click()
-                  page.wait_for_load_state("networkidle")
-                  page.get_by_role("link", name=" Reports ").click()
+              # Chạy ngược từ ngày xa nhất
+              for i in range(DAYS_RANGE, 1):
+                  target_dt = get_vn_now() + timedelta(days=i)
+                  print(f"\n🚀 === BẮT ĐẦU NGÀY: {target_dt.strftime('%d/%m/%Y')} ===")
 
-                  # Lặp từ ngày xa nhất về ngày hiện tại
-                  for i in range(DAYS_RANGE, 1):
-                      target_dt = get_vn_now() + timedelta(days=i)
-                      print(f"\n📅 --- DOWNLOAD NGÀY: {target_dt.strftime('%d/%m/%Y')} ---")
+                  # KHỞI TẠO TRÌNH DUYỆT MỚI CHO MỖI NGÀY ĐỂ GIẢI PHÓNG RAM
+                  with sync_playwright() as p:
+                      browser = p.chromium.launch(headless=True)
+                      context = browser.new_context()
+                      page = context.new_page()
                       
+                      # Đăng nhập lại
+                      page.goto("https://png-vn.ivycpg.com/web/")
+                      page.get_by_role("textbox", name="Username *").fill("2001584413.admin")
+                      page.get_by_role("textbox", name="Password *").fill("TVIET@2025#$")
+                      page.get_by_role("button", name="Login").click()
+                      page.wait_for_load_state("networkidle")
+                      page.get_by_role("link", name=" Reports ").click()
+
                       for branch in BRANCHES:
                           try:
-                              fname, temp_path = download_report(page, branch, target_dt)
-                              with open(temp_path, "rb") as f:
-                                  fcontent = f.read()
-                              
+                              fname, fcontent = download_report(page, branch, target_dt)
                               upload_url = f"{GRAPH_API}/drives/{drive_id}/root:{OUT_FOLDER}/{fname}:/content?@microsoft.graph.conflictBehavior=replace"
-                              requests.put(upload_url, headers=headers, data=fcontent)
-                              print(f"      ✅ OK: {fname}")
+                              up_res = requests.put(upload_url, headers=headers, data=fcontent)
+                              if up_res.ok: print(f"      ✅ Upload xong: {fname}")
+                              else: print(f"      ❌ Lỗi OneDrive {fname}: {up_res.text}")
                               time.sleep(1)
                           except Exception as e:
-                              print(f"      ⚠️ Bỏ qua {branch['code']}: {e}")
+                              print(f"      ⚠️ Lỗi {branch['code']}: {e}")
                               continue
+                      
+                      # Đóng trình duyệt sau khi xong 1 ngày
+                      browser.close()
+                      print(f"🧹 Đã đóng trình duyệt & dọn dẹp RAM cho ngày tiếp theo.")
 
-                  browser.close()
           except Exception as e:
-              print(f"❌ Lỗi: {e}")
+              print(f"❌ Lỗi hệ thống: {e}")
               exit(1)
           PYCODE
