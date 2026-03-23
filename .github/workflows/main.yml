@@ -1,4 +1,4 @@
-name: Smart Pivot Cache Extract (Full Decode + Export CSV & Parquet + Cleanup)
+name: Xử lý pivot ngày
 
 on:
   workflow_dispatch:
